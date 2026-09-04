@@ -1,0 +1,24 @@
+# 统一行尾：checkin 时归一化为 LF，避免跨平台混行尾
+* text=auto
+
+# 源码/配置统一 LF
+*.cs        text eol=lf
+*.csproj    text eol=lf
+*.sln       text eol=lf
+*.xaml      text eol=lf
+*.manifest  text eol=lf
+*.ps1       text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.json      text eol=lf
+*.md        text eol=lf
+*.txt       text eol=lf
+
+# 二进制明确不进 text 转换
+*.png  binary
+*.bmp  binary
+*.ico  binary
+*.zip  binary
+*.exe  binary
+*.dll  binary
+*.pdb  binary

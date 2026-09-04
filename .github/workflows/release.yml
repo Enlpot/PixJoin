@@ -1,10 +1,17 @@
 name: Release
 
-# 推送 v* 标签（如 v0.1.1）时自动构建并发布 GitHub Release
+# 推送 v* 标签（如 v0.1.1）时自动构建并发布 GitHub Release；
+# 也可手动触发（workflow_dispatch）补发/重跑，需已存在对应 tag
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（如 v0.2.0，需已推送该 tag）'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -21,12 +28,17 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      # 版本号 = tag 名（如 v0.1.1），用于产物命名
+      # 版本号 = tag 名（如 v0.1.1），用于产物命名；手动触发时取输入 tag
       - name: Determine version
         id: ver
         shell: pwsh
         run: |
-          "version=${{ github.ref_name }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $v = "${{ inputs.tag }}"
+          } else {
+            $v = "${{ github.ref_name }}"
+          }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8
 
       - name: Build
         run: dotnet build PixJoin.sln -c Release
@@ -77,6 +89,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          # push tag 时自动关联；手动触发时按输入 tag 定位（需已存在）
+          tag_name: ${{ steps.ver.outputs.version }}
           files: |
             publish/PixJoin-${{ steps.ver.outputs.version }}-win-x64.zip
             publish/PixJoin-${{ steps.ver.outputs.version }}-win-x64-fx.zip

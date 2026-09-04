@@ -374,14 +374,15 @@ public partial class App : Application
         var about = new ToolStripMenuItem("关于 PixJoin");
         about.Click += (_, _) => MessageBox.Show(
             "PixJoin —— 截图 / 贴图 / 吸附组合\n\n" +
-            $"版本：0.1.0（M1 骨架）\n" +
+            $"版本：{AppVersion}\n" +
             $"贴图数量：{_stickers.Count}\n\n" +
             "操作提示：\n" +
             $"· {_settings.Current.HotkeyDisplay}：截图\n" +
-            "· 拖动贴图：移动；靠近另一张 ≤10px 松手即组合\n" +
-            "· 组合内拖动：整组移动\n" +
-            $"· 按住 {ModifierName(_settings.Current.ProtectModifier)} 拖动：拆分（拖出 >25px）\n" +
-            "· Alt + 滚轮：调整透明度；Ctrl + 滚轮：缩放",
+            "· 拖动贴图：移动；靠近其它贴图自动吸附组合\n" +
+            "· 组合内拖动：整组移动；按住保护键拖出即拆分\n" +
+            $"· 保护键：{ModifierName(_settings.Current.ProtectModifier)}\n" +
+            "· 滚轮：缩放；Alt + 滚轮：调整透明度\n" +
+            "· 双击：关闭贴图；ESC（悬停）：关闭贴图",
             "关于 PixJoin", MessageBoxButton.OK, MessageBoxImage.Information);
         menu.Items.Add(about);
 
@@ -391,6 +392,9 @@ public partial class App : Application
 
         return menu;
     }
+
+    private static string AppVersion =>
+        typeof(App).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
 
     private static string ModifierName(uint mod)
     {

@@ -17,6 +17,12 @@ probe_tools/
 # ---- 参考图（不上传）----
 magnifier_ref.png
 
+# ---- 发布产物（本地打包用，Releases 由 Actions 产出）----
+publish/
+
+# ---- 占位模板文件（无功能）----
+Class1.cs
+
 # ---- 运行日志 ----
 *.log
 
