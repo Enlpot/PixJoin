@@ -1,0 +1,90 @@
+name: Release
+
+# 推送 v* 标签（如 v0.1.1）时自动构建并发布 GitHub Release
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # tag 去掉前导 v → 版本号（v0.1.1 → 0.1.1），用于产物命名
+      - name: Determine version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}".TrimStart('v')
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8
+
+      - name: Build
+        run: dotnet build PixJoin.sln -c Release
+
+      - name: Unit tests
+        run: dotnet run --project tests/PixJoin.Core.Tests -c Release
+
+      - name: Publish self-contained single-file (win-x64)
+        shell: pwsh
+        run: |
+          dotnet publish src/PixJoin.App -c Release -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -o publish/win-x64
+
+      - name: Smoke test (best effort, headless runner 无真实桌面)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          & "publish/win-x64/PixJoin.exe" --selftest
+
+      - name: Package zip + checksum
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          New-Item -ItemType Directory -Force -Path publish/dist | Out-Null
+          Copy-Item publish/win-x64/PixJoin.exe publish/dist/PixJoin.exe -Force
+          $zip = "publish/PixJoin-$v-win-x64.zip"
+          Compress-Archive -Path publish/dist/PixJoin.exe -DestinationPath $zip -Force
+          "SHA256($(Split-Path $zip -Leaf)) = $((Get-FileHash $zip -Algorithm SHA256).Hash)" |
+            Out-File -FilePath publish/SHA256SUMS.txt -Encoding utf8
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            publish/PixJoin-${{ steps.ver.outputs.version }}-win-x64.zip
+            publish/SHA256SUMS.txt
+          name: PixJoin ${{ steps.ver.outputs.version }}
+          body: |
+            ## PixJoin ${{ steps.ver.outputs.version }}
+
+            Windows 截图贴图工具：截图 → 钉在桌面（贴图）→ 靠近自动吸附组合成一张，一键导出 / 复制为单张图片。
+
+            ### 使用
+            下载 `PixJoin-${{ steps.ver.outputs.version }}-win-x64.zip`，解压后双击 `PixJoin.exe` 即可（自包含，无需安装 .NET 运行时）。
+
+            | 操作 | 按键 |
+            | --- | --- |
+            | 开始截图 | Ctrl+Shift+A |
+            | 拆分组合中的贴图 | 按住 Ctrl 拖出 |
+            | 关闭贴图 | 双击 |
+            | 缩放贴图 | 滚轮 |
+            | 关闭悬停贴图 | ESC |
+            | 导出 / 复制 | 右键贴图 |
+            | 设置 | 右键托盘 → 设置… |
+
+            ### 系统要求
+            Windows 10 / 11，x64
