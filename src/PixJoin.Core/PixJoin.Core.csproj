@@ -1,0 +1,19 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <UseWPF>true</UseWPF>
+    <PlatformTarget>x64</PlatformTarget>
+    <RootNamespace>PixJoin.Core</RootNamespace>
+    <AssemblyName>PixJoin.Core</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Using Include="System.Windows" />
+    <Using Include="System.Windows.Media" />
+    <Using Include="System.Windows.Media.Imaging" />
+  </ItemGroup>
+
+</Project>
