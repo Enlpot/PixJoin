@@ -8,6 +8,7 @@ SnapEngineTests.Run();
 GroupManagerTests.Run();
 ExportTests.Run();
 StickerGeometryTests.Run();
+OcrSelectionTests.Run();
 
 Console.WriteLine("\n=====================================");
 Console.WriteLine($"通过 {Check.Passed} 项，失败 {Check.Failures.Count} 项");

@@ -66,6 +66,7 @@ public partial class SettingsWindow : Window
         ChkDblClick.IsChecked = s.DoubleClickCloseEnabled;
         ChkWheel.IsChecked = s.WheelZoomEnabled;
         ChkEsc.IsChecked = s.EscCloseEnabled;
+        ChkOcr.IsChecked = s.OcrEnabled;
         ChkTransparent.IsChecked = s.TransparentBackground;
         ChkTrim.IsChecked = s.AutoTrim;
         ChkAutoStart.IsChecked = s.StartWithWindows;
@@ -144,6 +145,7 @@ public partial class SettingsWindow : Window
         s.DoubleClickCloseEnabled = ChkDblClick.IsChecked == true;
         s.WheelZoomEnabled = ChkWheel.IsChecked == true;
         s.EscCloseEnabled = ChkEsc.IsChecked == true;
+        s.OcrEnabled = ChkOcr.IsChecked == true;
         s.TransparentBackground = ChkTransparent.IsChecked == true;
         s.AutoTrim = ChkTrim.IsChecked == true;
         s.StartWithWindows = ChkAutoStart.IsChecked == true;

@@ -53,5 +53,10 @@
                    HorizontalAlignment="Right" VerticalAlignment="Bottom"
                    Margin="0,0,-7,-7" Cursor="SizeNWSE" />
         </Grid>
+
+        <!-- 文字选择高亮层（最顶层；空白不拦截，仅高亮矩形绘制） -->
+        <Canvas x:Name="OverlayLayer" Visibility="Collapsed">
+            <Canvas x:Name="SelectLayer" IsHitTestVisible="False" />
+        </Canvas>
     </Grid>
 </Window>

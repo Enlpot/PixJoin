@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Media.Imaging;
 using Microsoft.Win32;
@@ -23,13 +24,17 @@ public sealed class StickerManager
     private readonly GroupManager _groups = new();
     private readonly Dictionary<string, StickerWindow> _windows = new(StringComparer.Ordinal);
     private readonly SettingsService _settings;
+    private readonly IOcrEngine? _ocr;
     private GuideLayer _guideLayer;
     private DragSession? _drag;
     private bool _shuttingDown;
+    private StickerWindow? _hiddenExcept;
+    private bool _clickThrough;
 
-    public StickerManager(SettingsService settings)
+    public StickerManager(SettingsService settings, IOcrEngine? ocr = null)
     {
         _settings = settings;
+        _ocr = ocr ?? new WindowsOcrEngine();
         _guideLayer = new GuideLayer();
         _guideLayer.Show();
         _groups.Changed += OnGroupsChanged;
@@ -42,6 +47,11 @@ public sealed class StickerManager
     public int Count => _windows.Count;
 
     public IReadOnlyCollection<StickerWindow> Windows => _windows.Values;
+
+    /// <summary>全局 OCR 开关 + 引擎可用（缺语言包时自动禁用）。</summary>
+    public bool OcrEnabled => _settings.Current.OcrEnabled && (_ocr?.IsAvailable ?? false);
+
+    public bool HasHiddenStickers => _hiddenExcept is not null;
 
     // ---------------- 生命周期 ----------------
 
@@ -92,7 +102,109 @@ public sealed class StickerManager
         window.Show();
         window.RefreshFrame();
         RefreshGroupVisuals();
+        KickOffOcr(window);
         return window;
+    }
+
+    // ---------------- OCR 文字识别 ----------------
+
+    /// <summary>贴图后后台识别整张图；结果挂到 Sticker.OcrWords（词框为图片物理像素）。</summary>
+    private void KickOffOcr(StickerWindow window)
+    {
+        if (!OcrEnabled) return;
+
+        var sticker = window.Sticker;
+        var engine = _ocr!;
+        Task.Run(() =>
+        {
+            try
+            {
+                var result = engine.Recognize(sticker.Image);
+                if (result is null || result.Words.Count == 0) return;
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    if (!_windows.ContainsKey(sticker.Id)) return;   // 窗口已关闭
+                    sticker.OcrWords = result.Words;
+                    window.OnOcrReady();
+                });
+            }
+            catch
+            {
+                // OCR 失败不影响贴图本身
+            }
+        });
+    }
+
+    /// <summary>复制整张贴图的全部识别文字。</summary>
+    public void CopyAllOcrText(StickerWindow window)
+    {
+        var words = window.Sticker.OcrWords;
+        if (words is null || words.Count == 0) return;
+        SetTextOrWarn(OcrSelection.BuildText(words, 0, words.Count - 1));
+    }
+
+    /// <summary>复制选中的一段文字（词索引范围，文档顺序）。</summary>
+    public void CopyOcrSelection(StickerWindow window, int start, int end)
+    {
+        var words = window.Sticker.OcrWords;
+        if (words is null || words.Count == 0) return;
+        SetTextOrWarn(OcrSelection.BuildText(words, start, end));
+    }
+
+    /// <summary>Shift+C 全局快捷键：复制鼠标悬停贴图的全部识别文字。返回是否已处理。</summary>
+    public bool CopyAllTextUnderCursor()
+    {
+        if (!OcrEnabled) return false;
+        Win32.GetPhysicalCursorPos(out var p);
+        foreach (var w in _windows.Values)
+        {
+            if (w.Handle == IntPtr.Zero || !Win32.GetWindowRect(w.Handle, out var r)) continue;
+            if (p.X < r.Left || p.X >= r.Right || p.Y < r.Top || p.Y >= r.Bottom) continue;
+            var words = w.Sticker.OcrWords;
+            if (words is null || words.Count == 0) return false;
+            if (!ClipboardService.TrySetText(OcrSelection.BuildText(words, 0, words.Count - 1)))
+            {
+                WarnClipboardBusy();
+                return true;   // 仍拦截 Shift+C，避免按键穿透到下层应用
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>写文本到剪贴板；失败时弹提示（剪贴板被占用）。</summary>
+    private static void SetTextOrWarn(string text)
+    {
+        if (!ClipboardService.TrySetText(text)) WarnClipboardBusy();
+    }
+
+    private static void WarnClipboardBusy() =>
+        System.Windows.MessageBox.Show("复制失败：剪贴板正被其它程序占用，请稍后重试。",
+            "PixJoin", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+
+    // ---------------- 隐藏其他 / 鼠标穿透 ----------------
+
+    /// <summary>隐藏其它贴图；再次调用恢复全部（切换语义）。</summary>
+    public void ToggleHideOthers(StickerWindow keep)
+    {
+        if (_hiddenExcept is not null) { ShowAllStickers(); return; }
+        _hiddenExcept = keep;
+        foreach (var w in _windows.Values)
+            if (!ReferenceEquals(w, keep)) w.Visibility = Visibility.Hidden;
+    }
+
+    public void ShowAllStickers()
+    {
+        if (_hiddenExcept is null) return;
+        _hiddenExcept = null;
+        foreach (var w in _windows.Values) w.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>托盘全局开关：贴图鼠标穿透（点击穿过到下层窗口）。</summary>
+    public void SetClickThrough(bool on)
+    {
+        _clickThrough = on;
+        foreach (var w in _windows.Values) w.SetClickThrough(on);
     }
 
     public void OnWindowClosed(StickerWindow window)
@@ -100,6 +212,7 @@ public sealed class StickerManager
         var id = window.Sticker.Id;
         if (!_windows.ContainsKey(id)) return;
         _windows.Remove(id);
+        if (ReferenceEquals(window, _hiddenExcept)) ShowAllStickers();   // 隐藏源的贴图被关 → 恢复显示
         _groups.Unregister(id);   // 先摘除组合关系，成员不足时自动解散
         RefreshGroupVisuals();
     }
@@ -171,6 +284,10 @@ public sealed class StickerManager
         {
             if (w.Handle == IntPtr.Zero || !Win32.GetWindowRect(w.Handle, out var r)) continue;
             if (p.X < r.Left || p.X >= r.Right || p.Y < r.Top || p.Y >= r.Bottom) continue;
+
+            // 有活动文字选区：ESC 先取消选择，不关闭贴图
+            if (w.CancelTextSelectionIfActive()) return true;
+
             if (!ConfirmEscClose(w)) return false;   // 功能禁用 → 放行 ESC，不拦截
             CloseSticker(w);
             return true;
@@ -509,7 +626,7 @@ public sealed class StickerManager
         var opt = new ExportService.ExportOptions(_settings.Current.TransparentBackground, _settings.Current.AutoTrim);
         var bmp = ExportService.Compose(ExportTargets(window), opt);
         if (bmp is null) return;
-        Clipboard.SetImage(bmp);
+        if (!ClipboardService.TrySetImage(bmp)) WarnClipboardBusy();
     }
 
     public void SaveStickerOrGroup(StickerWindow window)

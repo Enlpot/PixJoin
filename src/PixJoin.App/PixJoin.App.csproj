@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <Nullable>enable</Nullable>
     <!-- UseWindowsForms=true 会把 System.Windows.Forms / System.Drawing 变成全局 using，
          与 WPF 的 Point / Color / Image / Button 等类型冲突，因此这里关掉隐式 using，全部显式书写。 -->

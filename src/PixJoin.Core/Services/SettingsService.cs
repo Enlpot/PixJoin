@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -48,6 +48,9 @@ public sealed class AppSettings
     public bool EscCloseEnabled { get; set; } = true;
 
     public bool EscClosePrompted { get; set; }
+
+    /// <summary>贴图自动 OCR 文字识别（悬停文字显示 IBeam、可拖选复制）。</summary>
+    public bool OcrEnabled { get; set; } = true;
 
     // ---- 导出 ----
     public bool TransparentBackground { get; set; } = true;

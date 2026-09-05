@@ -155,22 +155,37 @@ public partial class App : Application
         _escHookProc = null;
     }
 
-    /// <summary>低级键盘钩子：鼠标悬停在贴图上时，ESC 关闭该贴图（含首次提示）；截图时不拦截。</summary>
+    /// <summary>低级键盘钩子：悬停贴图时 ESC 关闭（含首次提示）、Shift+C 复制全部识别文字；截图时不拦截。</summary>
     private IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam)
     {
-        if (nCode >= 0 && wParam == (IntPtr)Win32.WM_KEYDOWN && Marshal.ReadInt32(lParam) == Win32.VK_ESCAPE)
+        if (nCode >= 0 && wParam == (IntPtr)Win32.WM_KEYDOWN)
         {
-            // 截图 overlay 活跃时，ESC 由截图流程处理（取消 / 重置选区）
-            if (_capture is not null && _capture.IsLoaded && _capture.IsVisible)
-                return Win32.CallNextHookEx(_escHook, nCode, wParam, lParam);
+            int vk = Marshal.ReadInt32(lParam);
 
-            // 首次使用确认弹窗进行中：放行 ESC，让用户在对话框里正常选择（ESC=否）
-            if (_stickers.FirstUsePromptActive)
+            // Shift+C：复制鼠标悬停贴图的全部识别文字（无识别结果则放行按键）
+            if (vk == (int)'C' && Win32.IsKeyDown(Win32.VK_SHIFT))
+            {
+                if (_capture is not null && _capture.IsLoaded && _capture.IsVisible)
+                    return Win32.CallNextHookEx(_escHook, nCode, wParam, lParam);
+                if (_stickers.CopyAllTextUnderCursor())
+                    return new IntPtr(1);
                 return Win32.CallNextHookEx(_escHook, nCode, wParam, lParam);
+            }
 
-            // 鼠标悬停在贴图上：ESC 关闭该贴图（含首次提示），拦截按键避免穿透
-            if (_stickers.TryCloseUnderCursor())
-                return new IntPtr(1);
+            if (vk == Win32.VK_ESCAPE)
+            {
+                // 截图 overlay 活跃时，ESC 由截图流程处理（取消 / 重置选区）
+                if (_capture is not null && _capture.IsLoaded && _capture.IsVisible)
+                    return Win32.CallNextHookEx(_escHook, nCode, wParam, lParam);
+
+                // 首次使用确认弹窗进行中：放行 ESC，让用户在对话框里正常选择（ESC=否）
+                if (_stickers.FirstUsePromptActive)
+                    return Win32.CallNextHookEx(_escHook, nCode, wParam, lParam);
+
+                // 鼠标悬停在贴图上：ESC 关闭该贴图（含首次提示），拦截按键避免穿透
+                if (_stickers.TryCloseUnderCursor())
+                    return new IntPtr(1);
+            }
         }
         return Win32.CallNextHookEx(_escHook, nCode, wParam, lParam);
     }
@@ -303,7 +318,9 @@ public partial class App : Application
                 break;
 
             case CaptureAction.Copy:
-                System.Windows.Clipboard.SetImage(result.Bitmap);
+                if (!ClipboardService.TrySetImage(result.Bitmap))
+                    System.Windows.MessageBox.Show("复制失败：剪贴板正被其它程序占用，请稍后重试。",
+                        "PixJoin", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
                 break;
 
             case CaptureAction.Save:
@@ -362,6 +379,10 @@ public partial class App : Application
         var front = new ToolStripMenuItem("贴图置前");
         front.Click += (_, _) => _stickers.BringAllToFront();
         menu.Items.Add(front);
+
+        var clickThrough = new ToolStripMenuItem("贴图鼠标穿透") { CheckOnClick = true };
+        clickThrough.Click += (_, _) => _stickers.SetClickThrough(clickThrough.Checked);
+        menu.Items.Add(clickThrough);
 
         menu.Items.Add(new ToolStripSeparator());
 

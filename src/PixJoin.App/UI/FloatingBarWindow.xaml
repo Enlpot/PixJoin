@@ -1,0 +1,19 @@
+<Window x:Class="PixJoin.App.UI.FloatingBarWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="PixJoin"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ShowInTaskbar="False" ShowActivated="False" Topmost="True"
+        SizeToContent="WidthAndHeight" ResizeMode="NoResize" Focusable="False"
+        SnapsToDevicePixels="True">
+    <Border Background="#F2FFFFFF" BorderBrush="#AA888888" BorderThickness="1"
+            CornerRadius="4" Padding="4,2">
+        <StackPanel Orientation="Horizontal">
+            <Button x:Name="BtnCopy" Content="复制" Padding="8,2" Click="OnCopy"
+                    Background="#EE00A8FF" Foreground="White" BorderThickness="0"
+                    FontSize="12" Cursor="Hand" />
+            <Button Content="✕" Padding="8,2" Margin="6,0,0,0" Click="OnDismiss"
+                    Background="#EEE0E0E0" BorderThickness="0" FontSize="12" Cursor="Hand" />
+        </StackPanel>
+    </Border>
+</Window>

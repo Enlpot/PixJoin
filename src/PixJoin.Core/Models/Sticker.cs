@@ -29,6 +29,12 @@ public sealed class Sticker
     /// <summary>null = 独立贴图；非 null = 属于某个组合体。</summary>
     public string? GroupId { get; set; }
 
+    /// <summary>OCR 词级结果（图片物理像素坐标）；null = 未识别 / 引擎不可用 / 无文字。</summary>
+    public System.Collections.Generic.List<OcrWord>? OcrWords { get; set; }
+
+    /// <summary>锁定：不可移动 / 缩放 / 文字选择 / 双击关闭（右键菜单仍可用）。</summary>
+    public bool IsLocked { get; set; }
+
     public DateTime CreatedAt { get; init; } = DateTime.Now;
 
     /// <summary>轴对齐包围盒（物理像素）。</summary>

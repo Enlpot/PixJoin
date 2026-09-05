@@ -88,6 +88,7 @@
                         <CheckBox x:Name="ChkDblClick" Content="双击关闭贴图"/>
                         <CheckBox x:Name="ChkWheel" Content="直接滚动滚轮缩放贴图" Margin="0,8,0,0"/>
                         <CheckBox x:Name="ChkEsc" Content="悬停贴图按 ESC 关闭" Margin="0,8,0,0"/>
+                        <CheckBox x:Name="ChkOcr" Content="自动识别文字（悬停文字可拖选复制）" Margin="0,8,0,0"/>
                         <TextBlock Text="首次使用仍会弹窗确认，可在本处关闭对应功能"
                                    Foreground="#888" FontSize="11" Margin="0,6,0,0"/>
                     </StackPanel>

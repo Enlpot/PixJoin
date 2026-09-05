@@ -62,6 +62,9 @@ internal static class Win32
     public const int WM_MOUSEACTIVATE = 0x0021;
     public const int MA_NOACTIVATE = 3;
 
+    // ---- 剪贴板 ----
+    public const uint CF_UNICODETEXT = 13;
+
     public const uint MOD_ALT = 0x0001;
     public const uint MOD_CONTROL = 0x0002;
     public const uint MOD_SHIFT = 0x0004;
@@ -98,6 +101,19 @@ internal static class Win32
     /// <summary>取鼠标位置（始终返回物理像素，不受进程 DPI 感知模式影响）。</summary>
     [DllImport("user32.dll")]
     public static extern bool GetPhysicalCursorPos(out POINT lpPoint);
+
+    // ---- 剪贴板（原生写入，规避 WPF Clipboard 在占用时的 CLIPBRD_E_CANT_OPEN） ----
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool OpenClipboard(IntPtr hWndNewOwner);
+
+    [DllImport("user32.dll")]
+    public static extern bool CloseClipboard();
+
+    [DllImport("user32.dll")]
+    public static extern bool EmptyClipboard();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);

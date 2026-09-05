@@ -5,8 +5,10 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Shapes;
 using PixJoin.App.Native;
 using PixJoin.Core.Models;
+using PixJoin.Core.Services;
 
 namespace PixJoin.App.UI;
 
@@ -30,6 +32,14 @@ public sealed partial class StickerWindow : Window
 
     private DateTime _lastLeftUpTime = DateTime.MinValue;   // 双击检测：上次左键抬起时间
     private Point _lastLeftUpPos;                            // 双击检测：上次左键抬起位置（窗口坐标）
+
+    // ---- 文字选择（OCR） ----
+    private bool _selectingText;                 // 正在拖选文字
+    private int _selectStart = -1;               // 起点词索引（文档顺序）
+    private int _selectEnd = -1;                 // 终点词索引
+    private bool _textSelectable = true;         // 贴图级「文本可选择」开关（右键菜单）
+    private readonly SolidColorBrush _selectBrush = new(Color.FromArgb(0x55, 0x33, 0x88, 0xFF));
+    private FloatingBarWindow? _floating;        // 文字选择浮动工具条（独立小窗口，可超出贴图窗口）
 
     public Sticker Sticker { get; }
 
@@ -127,6 +137,13 @@ public sealed partial class StickerWindow : Window
     /// <summary>刷新边框与外框可见性：始终显示——组合青色实线、单张淡白描边（悬停更亮），缩放手柄常驻。</summary>
     public void RefreshFrame()
     {
+        if (Sticker.IsLocked)
+        {
+            Frame.BorderBrush = new SolidColorBrush(Color.FromArgb(0x66, 0xCC, 0xCC, 0xCC));
+            HandleLayer.Visibility = Visibility.Collapsed;
+            return;
+        }
+
         if (Sticker.IsGrouped)
             Frame.BorderBrush = new SolidColorBrush(Color.FromArgb(0xCC, 0x00, 0xE5, 0xC0));
         else if (IsMouseOver)
@@ -150,6 +167,27 @@ public sealed partial class StickerWindow : Window
         if (e.ChangedButton != MouseButton.Left) return;
         if (e.Source is Thumb) return;   // 手柄自己处理
 
+        // 锁定：禁止一切主体交互（右键菜单仍可用）
+        if (Sticker.IsLocked) { e.Handled = true; return; }
+
+        // Alt 按住 → 强制移动贴图（跳过文字选择，PixPin 同款）
+        bool altForced = (Keyboard.Modifiers & ModifierKeys.Alt) != 0;
+
+        if (!altForced && CanTextSelect())
+        {
+            var img = ToImageCoord(e.GetPosition(this));
+            int idx = OcrSelection.HitTest(Sticker.OcrWords!, img.X, img.Y);
+            if (idx >= 0)
+            {
+                BeginTextSelection(idx);
+                e.Handled = true;
+                return;
+            }
+        }
+
+        // 空白处按下：清掉已有文字选区（若有），然后走拖动
+        ClearTextSelection();
+
         CaptureMouse();
         _owner.BeginDrag(this, e.GetPosition(this));
         e.Handled = true;
@@ -157,12 +195,26 @@ public sealed partial class StickerWindow : Window
 
     private void OnBodyMouseMove(object sender, MouseEventArgs e)
     {
-        if (!_owner.IsDragging) return;
-        _owner.UpdateDrag(this);
+        if (_owner.IsDragging) { _owner.UpdateDrag(this); return; }
+
+        if (_selectingText)
+        {
+            UpdateTextSelection(e.GetPosition(this));
+            return;
+        }
+
+        UpdateTextCursor(e.GetPosition(this));
     }
 
     private void OnBodyMouseUp(object sender, MouseButtonEventArgs e)
     {
+        if (_selectingText)
+        {
+            EndTextSelection(e.GetPosition(this));
+            e.Handled = true;
+            return;
+        }
+
         if (!_owner.IsDragging) return;
         if (IsMouseCaptured) ReleaseMouseCapture();
         _owner.EndDrag(this);
@@ -171,6 +223,7 @@ public sealed partial class StickerWindow : Window
         // 手动双击检测：OnBodyMouseDown 在 Preview 阶段设 Handled 会抑制 WPF 自带 MouseDoubleClick，
         // 改在 MouseUp 处用「时间 + 位置」判双击（仅贴图主体，缩放手柄不算）。
         if (e.ChangedButton != MouseButton.Left || e.Source is Thumb) return;
+        if (Sticker.IsLocked) return;
         var now = DateTime.Now;
         var pos = e.GetPosition(this);
         bool isDouble = (now - _lastLeftUpTime).TotalMilliseconds < 500
@@ -193,6 +246,9 @@ public sealed partial class StickerWindow : Window
 
     private void OnMouseWheel(object sender, MouseWheelEventArgs e)
     {
+        // 锁定：滚轮缩放 / 调透明度都禁用
+        if (Sticker.IsLocked) { e.Handled = true; return; }
+
         bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
         bool alt = (Keyboard.Modifiers & ModifierKeys.Alt) != 0;
 
@@ -206,6 +262,9 @@ public sealed partial class StickerWindow : Window
         {
             // 直接滚轮（新增，首次提示）或 Ctrl+滚轮（原有）：以中心为锚点缩放贴图
             if (!ctrl && !_owner.ConfirmWheelZoom(this)) { e.Handled = true; return; }
+
+            // 缩放会改变图片显示尺寸，选区高亮坐标随之失效 → 清除选区
+            ClearTextSelection();
 
             // 每格 3%（等比）：锚点由吸附状态决定——单边吸附贴边缩放，否则中心缩放
             double f = e.Delta > 0 ? 1.03 : 1.0 / 1.03;
@@ -225,6 +284,8 @@ public sealed partial class StickerWindow : Window
 
     private void OnResizeDragStarted(object? sender, DragStartedEventArgs e)
     {
+        // 缩放会改变图片显示尺寸，选区高亮坐标随之失效 → 清除选区
+        ClearTextSelection();
         GeometrySnapshot = (Sticker.X, Sticker.Y, Sticker.W, Sticker.H);
         _resizeOriginPhysical = GetCursorPhysical();
     }
@@ -293,6 +354,35 @@ public sealed partial class StickerWindow : Window
 
         menu.Items.Add(new Separator());
 
+        // ---- OCR / 文字识别 ----
+        bool hasOcr = Sticker.OcrWords is { Count: > 0 };
+        var copyAllText = new MenuItem { Header = "复制所有文本（Shift+C）", IsEnabled = hasOcr };
+        copyAllText.Click += (_, _) => _owner.CopyAllOcrText(this);
+        menu.Items.Add(copyAllText);
+
+        var textSelect = new MenuItem { Header = "文本可选择", IsChecked = _textSelectable };
+        textSelect.Click += (_, _) =>
+        {
+            _textSelectable = !_textSelectable;
+            if (!_textSelectable) ClearTextSelection();
+        };
+        menu.Items.Add(textSelect);
+
+        menu.Items.Add(new Separator());
+
+        var hideOthers = new MenuItem { Header = _owner.HasHiddenStickers ? "显示全部贴图" : "隐藏其他贴图" };
+        hideOthers.Click += (_, _) => _owner.ToggleHideOthers(this);
+        menu.Items.Add(hideOthers);
+
+        var lockItem = new MenuItem { Header = "锁定", IsChecked = Sticker.IsLocked };
+        lockItem.Click += (_, _) =>
+        {
+            Sticker.IsLocked = !Sticker.IsLocked;
+            if (Sticker.IsLocked) ClearTextSelection();
+            RefreshFrame();
+        };
+        menu.Items.Add(lockItem);
+
         var opacityRoot = new MenuItem { Header = "透明度" };
         foreach (var v in new[] { 0.25, 0.5, 0.75, 1.0 })
         {
@@ -324,9 +414,168 @@ public sealed partial class StickerWindow : Window
         return menu;
     }
 
+    // ---------------- 文字选择（OCR） ----------------
+
+    /// <summary>是否可进行文字选择：贴图级开关 + 全局 OCR 开关 + 引擎可用 + 已有识别结果。</summary>
+    private bool CanTextSelect() =>
+        _textSelectable && !Sticker.IsLocked && _owner.OcrEnabled && Sticker.OcrWords is { Count: > 0 };
+
+    /// <summary>OCR 完成后由 Manager 回调：有词则激活选择层（悬停命中时显示 IBeam）。</summary>
+    public void OnOcrReady()
+    {
+        if (Sticker.OcrWords is { Count: > 0 })
+            OverlayLayer.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>窗口 DIP 坐标 → 图片物理像素坐标（Image Stretch=Fill，按实际显示尺寸换算）。</summary>
+    private Point ToImageCoord(Point dip)
+    {
+        int pw = Sticker.Image.PixelWidth;
+        int ph = Sticker.Image.PixelHeight;
+        double iw = Img.ActualWidth > 0 ? Img.ActualWidth : pw;
+        double ih = Img.ActualHeight > 0 ? Img.ActualHeight : ph;
+        return new Point(dip.X * pw / iw, dip.Y * ph / ih);
+    }
+
+    /// <summary>悬停时光标切换：词内 IBeam，否则箭头。</summary>
+    private void UpdateTextCursor(Point dip)
+    {
+        if (!CanTextSelect())
+        {
+            if (Cursor != Cursors.Arrow) Cursor = Cursors.Arrow;
+            return;
+        }
+        var img = ToImageCoord(dip);
+        int idx = OcrSelection.HitTest(Sticker.OcrWords!, img.X, img.Y);
+        Cursor = idx >= 0 ? Cursors.IBeam : Cursors.Arrow;
+    }
+
+    private void BeginTextSelection(int idx)
+    {
+        _selectingText = true;
+        _selectStart = idx;
+        _selectEnd = idx;
+        CaptureMouse();
+        HideFloatingBar();
+        RefreshSelectionLayer();
+    }
+
+    private void UpdateTextSelection(Point dip)
+    {
+        var img = ToImageCoord(dip);
+        int idx = OcrSelection.HitTest(Sticker.OcrWords!, img.X, img.Y);
+        if (idx < 0 || idx == _selectEnd) return;
+        _selectEnd = idx;
+        RefreshSelectionLayer();
+    }
+
+    private void EndTextSelection(Point endPos)
+    {
+        _selectingText = false;
+        if (IsMouseCaptured) ReleaseMouseCapture();
+        RefreshSelectionLayer();
+        if (_selectStart >= 0 && _selectEnd >= 0) ShowFloatingBar(endPos);
+        else ClearTextSelection();
+    }
+
+    /// <summary>把 [start, end] 内所有词画为半透明高亮（DIP 坐标）。</summary>
+    private void RefreshSelectionLayer()
+    {
+        SelectLayer.Children.Clear();
+        if (_selectStart < 0 || _selectEnd < 0) return;
+        var words = Sticker.OcrWords;
+        if (words is null || words.Count == 0) return;
+
+        var (s, e) = OcrSelection.Normalize(_selectStart, _selectEnd);
+        double sx = Img.ActualWidth > 0 ? Img.ActualWidth / Sticker.Image.PixelWidth : 1;
+        double sy = Img.ActualHeight > 0 ? Img.ActualHeight / Sticker.Image.PixelHeight : 1;
+
+        for (int i = s; i <= e; i++)
+        {
+            var w = words[i];
+            var rect = new Rectangle { Fill = _selectBrush, Width = w.W * sx, Height = w.H * sy };
+            Canvas.SetLeft(rect, w.X * sx);
+            Canvas.SetTop(rect, w.Y * sy);
+            SelectLayer.Children.Add(rect);
+        }
+    }
+
+    /// <summary>浮动工具条在鼠标松手点附近弹出（独立小窗口，可超出贴图窗口；贴屏幕边缘自动翻转）。</summary>
+    private void ShowFloatingBar(Point endPos)
+    {
+        var words = Sticker.OcrWords;
+        if (words is null || words.Count == 0) return;
+
+        if (_floating is null)
+        {
+            _floating = new FloatingBarWindow();
+            _floating.Owner = this;
+            _floating.CopyRequested += OnCopySelection;
+            _floating.DismissRequested += OnDismissSelection;
+        }
+
+        // 贴图窗口内坐标 → 屏幕坐标（WPF DIP，多显示器负坐标亦正确）
+        Point screen = PointToScreen(endPos);
+
+        // 先测量获得真实尺寸（未显示时 ActualWidth 为 0）
+        _floating.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        double bw = _floating.DesiredSize.Width;
+        double bh = _floating.DesiredSize.Height;
+
+        const double gap = 8;
+        double x = screen.X + gap;
+        double y = screen.Y + gap;
+        // 超出虚拟屏幕右/下边缘 → 翻转到鼠标左/上方
+        double vsRight = SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth;
+        double vsBottom = SystemParameters.VirtualScreenTop + SystemParameters.VirtualScreenHeight;
+        if (x + bw > vsRight) x = screen.X - bw - gap;
+        if (y + bh > vsBottom) y = screen.Y - bh - gap;
+
+        _floating.Left = x;
+        _floating.Top = y;
+        if (!_floating.IsVisible) _floating.Show();
+    }
+
+    private void HideFloatingBar() => _floating?.Hide();
+
+    private void ClearTextSelection()
+    {
+        _selectingText = false;
+        _selectStart = -1;
+        _selectEnd = -1;
+        SelectLayer.Children.Clear();
+        HideFloatingBar();
+    }
+
+    /// <summary>ESC 优先级：有活动文字选区 / 浮动条时先取消选择（返回 true 拦截 ESC），不关闭贴图。</summary>
+    public bool CancelTextSelectionIfActive()
+    {
+        if (!_selectingText && _selectStart < 0 && (_floating is null || !_floating.IsVisible)) return false;
+        ClearTextSelection();
+        return true;
+    }
+
+    private void OnCopySelection()
+    {
+        if (_selectStart < 0 || _selectEnd < 0) return;
+        _owner.CopyOcrSelection(this, _selectStart, _selectEnd);
+        ClearTextSelection();
+    }
+
+    private void OnDismissSelection() => ClearTextSelection();
+    /// <summary>鼠标穿透（托盘全局开关）：点击事件穿过贴图到下层窗口。</summary>
+    public void SetClickThrough(bool on)
+    {
+        if (Handle == IntPtr.Zero) return;
+        int ex = Win32.GetWindowLong(Handle, Win32.GWL_EXSTYLE);
+        int next = on ? ex | Win32.WS_EX_TRANSPARENT : ex & ~Win32.WS_EX_TRANSPARENT;
+        if (next != ex) Win32.SetWindowLong(Handle, Win32.GWL_EXSTYLE, next);
+    }
+
     protected override void OnClosed(EventArgs e)
     {
         _hwndSource?.RemoveHook(_hook);
+        _floating?.Close();   // 独立浮动条随贴图关闭（Owner 机制也会关，双保险）
         _owner.OnWindowClosed(this);
         base.OnClosed(e);
     }
