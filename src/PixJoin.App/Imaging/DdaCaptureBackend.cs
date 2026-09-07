@@ -181,11 +181,20 @@ public sealed class DdaCaptureBackend : ICaptureBackend
     private static Bitmap? CaptureOneOutput(IDXGIOutputDuplication dup, ID3D11Device device, int w, int h)
     {
         IDXGIResource? resource = null;
-        for (int attempt = 0; attempt < 5; attempt++)
+        for (int attempt = 0; attempt < 8; attempt++)
         {
-            var result = dup.AcquireNextFrame(400, out _, out resource);
-            if (result.Success && resource is not null) break;
-            if (attempt == 4)
+            var result = dup.AcquireNextFrame(400, out var info, out resource);
+            if (result.Success && resource is not null)
+            {
+                // DDA 建立初期会先返回几帧 AccumulatedFrames==0 的空黑帧（实测 2~3 帧），
+                // 跳过它们直到拿到含真实桌面内容的帧。
+                if (info.AccumulatedFrames > 0) break;
+                dup.ReleaseFrame();
+                resource.Dispose();
+                resource = null;
+                continue;
+            }
+            if (attempt == 7)
             {
                 LastError = "AcquireNextFrame 超时（code=" + result.Code + "）";
                 return null;
@@ -241,5 +250,9 @@ public sealed class DdaCaptureBackend : ICaptureBackend
     {
         if (count <= 0) return;
         Buffer.MemoryCopy((void*)src, (void*)dst, count, count);
+        // DDA 桌面帧的 alpha 通道通常为 0（透明）——若直接贴图内容不可见（只显示外框），
+        // 强制不透明（32bppArgb 每 4 字节第 4 字节为 alpha）。
+        byte* p = (byte*)dst;
+        for (int i = 3; i < count; i += 4) p[i] = 0xFF;
     }
 }

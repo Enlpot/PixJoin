@@ -579,7 +579,18 @@ public partial class App : Application
     /// 内存构造含中文的位图 → 组合引擎（PP-OCRv4 优先）识别 → 校验词框数量与坐标。
     /// 结果写到 selftest/ocr_result.txt，退出码 0/1。
     /// </summary>
-    private void RunSelfTestOcr()
+        private static int CountOpaque(System.Windows.Media.Imaging.BitmapSource bmp)
+    {
+        int stride = bmp.PixelWidth * 4;
+        var buf = new byte[bmp.PixelHeight * stride];
+        bmp.CopyPixels(buf, stride, 0);
+        int cnt = 0;
+        for (int i = 3; i < buf.Length; i += 4)
+            if (buf[i] > 0) cnt++;
+        return cnt;
+    }
+
+private void RunSelfTestOcr()
     {
         var lines = new List<string>();
         string outDir = Path.Combine(SettingsService.ConfigDirectory, "selftest");
@@ -660,7 +671,14 @@ public partial class App : Application
             var shot = ScreenCapture.CaptureVirtualScreen();
             lines.Add($"OK backend={ScreenCapture.ActiveBackendName}");
             int pw = shot.Bitmap.PixelWidth, ph = shot.Bitmap.PixelHeight;
-            lines.Add($"OK capture {pw}x{ph}");
+            int opaque = CountOpaque(shot.Bitmap);
+            lines.Add($"OK capture {pw}x{ph} opaque={opaque}");
+            if (opaque <= 0) throw new InvalidOperationException("截图为全透明/全黑，内容无效");
+            var enc = new System.Windows.Media.Imaging.PngBitmapEncoder();
+            enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(shot.Bitmap));
+            using (var fs = File.Create(Path.Combine(outDir, "capture_full.png")))
+                enc.Save(fs);
+            lines.Add($"OK full-shot saved opaque={opaque}");
 
             int w = Math.Max(1, Math.Min(240, pw / 2));
             int h = Math.Max(1, Math.Min(240, ph / 2));
