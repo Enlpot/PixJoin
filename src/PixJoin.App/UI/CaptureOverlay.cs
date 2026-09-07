@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
@@ -1411,8 +1411,8 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
             {
                 Width = Math.Max(1, b.Width * dip),
                 Height = Math.Max(1, b.Height * dip),
-                Stroke = new SolidColorBrush(Color.FromRgb(0x00, 0xE5, 0xC0)),
-                StrokeThickness = 2,
+                Stroke = new SolidColorBrush(Color.FromRgb(0x3B, 0x82, 0xF6)),
+                StrokeThickness = 2.5,
                 StrokeDashArray = new DoubleCollection { 5, 3 },
                 Fill = Brushes.Transparent,
             };
@@ -1571,6 +1571,30 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
 
         var panel = new StackPanel { Orientation = Orientation.Horizontal, Background = new SolidColorBrush(Color.FromArgb(0xEE, 0x22, 0x22, 0x22)) };
 
+        // 样式下拉（箭头=样式+线型；其余=线型），作用于选中标注
+        if (a.Tool != AnnotationTool.Highlight && a.Tool != AnnotationTool.Mosaic)
+        {
+            var styleBtn = new Button
+            {
+                Content = new TextBlock
+                {
+                    Text = "▾",
+                    Foreground = Brushes.White,
+                    FontSize = 12 * scale,
+                    Margin = new Thickness(2 * scale, 0, 2 * scale, 0),
+                },
+                Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A)),
+                BorderThickness = new Thickness(0),
+                Padding = new Thickness(5 * scale, 1 * scale, 5 * scale, 1 * scale),
+                Cursor = Cursors.Arrow,
+                ToolTip = "样式（线型/箭头形状）",
+            };
+            var styleMenu = a.Tool == AnnotationTool.Arrow ? BuildArrowMenu() : BuildLineStyleMenu();
+            styleBtn.Click += (_, _) => { styleMenu.PlacementTarget = styleBtn; styleMenu.IsOpen = true; };
+            styleBtn.ContextMenu = styleMenu;
+            panel.Children.Add(styleBtn);
+        }
+
         foreach (var c in AnnotColors)
         {
             bool active = c == selColor;
@@ -1708,18 +1732,6 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
     {
         var color = ((SolidColorBrush)brush).Color;
 
-        // 杆：二次贝塞尔曲线
-        var shaft = new StreamGeometry();
-        using (var g = shaft.Open())
-        {
-            g.BeginFigure(new Point(x0, y0), false, false);
-            g.QuadraticBezierTo(new Point(cx, cy), new Point(x2, y2), true, false);
-        }
-        shaft.Freeze();
-        var sp = new Path { Data = shaft, Stroke = brush, StrokeThickness = stroke };
-        if (dashed) sp.StrokeDashArray = new DoubleCollection { 4, 3 };
-        _annotLayer.Children.Add(sp);
-
         // 终点切线方向 = P2 - C
         double dx = x2 - cx, dy = y2 - cy;
         double len = Math.Sqrt(dx * dx + dy * dy);
@@ -1727,13 +1739,26 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         if (len < 1e-6) { ux = 0; uy = 0; nx = 1; ny = 0; }
         else { ux = dx / len; uy = dy / len; nx = -uy; ny = ux; }
 
+        double h = Math.Max(8, stroke * 4);
+        double hw = h * 0.42;
+        double hrx = x2 - ux * h, hry = y2 - uy * h;
+
+        // 杆：二次贝塞尔曲线（终点 = 头部根部，实心箭头一体不穿头）
+        var shaft = new StreamGeometry();
+        using (var g = shaft.Open())
+        {
+            g.BeginFigure(new Point(x0, y0), false, false);
+            g.QuadraticBezierTo(new Point(cx, cy), new Point(hrx, hry), true, false);
+        }
+        shaft.Freeze();
+        var sp = new Path { Data = shaft, Stroke = brush, StrokeThickness = stroke };
+        if (dashed) sp.StrokeDashArray = new DoubleCollection { 4, 3 };
+        _annotLayer.Children.Add(sp);
+
         switch (style)
         {
             case ArrowStyle.Solid:
             {
-                double h = Math.Max(8, stroke * 4);
-                double hw = h * 0.42;
-                double hrx = x2 - ux * h, hry = y2 - uy * h;
                 var head = new StreamGeometry();
                 using (var g = head.Open())
                 {
@@ -1747,20 +1772,17 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
             }
             case ArrowStyle.Line:
             {
-                double h = Math.Max(8, stroke * 3.5);
-                double hw = h * 0.38;
-                double hrx = x2 - ux * h, hry = y2 - uy * h;
+                double hl = Math.Max(8, stroke * 3.5);
+                double hlw = hl * 0.38;
+                double lhrx = x2 - ux * hl, lhry = y2 - uy * hl;
                 double lw = Math.Max(1.5, stroke * 0.8);
                 var lp = new SolidColorBrush(color);
-                _annotLayer.Children.Add(new Line { X1 = x2, Y1 = y2, X2 = hrx + nx * hw, Y2 = hry + ny * hw, Stroke = lp, StrokeThickness = lw });
-                _annotLayer.Children.Add(new Line { X1 = x2, Y1 = y2, X2 = hrx - nx * hw, Y2 = hry - ny * hw, Stroke = lp, StrokeThickness = lw });
+                _annotLayer.Children.Add(new Line { X1 = x2, Y1 = y2, X2 = lhrx + nx * hlw, Y2 = lhry + ny * hlw, Stroke = lp, StrokeThickness = lw });
+                _annotLayer.Children.Add(new Line { X1 = x2, Y1 = y2, X2 = lhrx - nx * hlw, Y2 = lhry - ny * hlw, Stroke = lp, StrokeThickness = lw });
                 break;
             }
             case ArrowStyle.Double:
             {
-                double h = Math.Max(8, stroke * 4);
-                double hw = h * 0.42;
-                double hrx = x2 - ux * h, hry = y2 - uy * h;
                 double h2 = h * 0.6, hw2 = hw * 0.6;
                 double dx0 = x0 - cx, dy0 = y0 - cy;
                 double l0 = Math.Sqrt(dx0 * dx0 + dy0 * dy0);

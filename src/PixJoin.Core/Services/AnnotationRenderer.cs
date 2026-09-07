@@ -245,11 +245,15 @@ public static class AnnotationRenderer
         var fill = new SolidColorBrush(color);
         fill.Freeze();
 
-        var shaft = new StreamGeometry();   // 杆：二次贝塞尔
+        double h = Math.Max(10, thickness * 4);
+        double hw = h * 0.42;
+        double hrx = x2 - ux * h, hry = y2 - uy * h;
+
+        var shaft = new StreamGeometry();   // 杆：二次贝塞尔（终点 = 头部根部，实心箭头一体不穿头）
         using (var g = shaft.Open())
         {
             g.BeginFigure(new Point(x0, y0), false, false);
-            g.QuadraticBezierTo(new Point(cx, cy), new Point(x2, y2), true, false);
+            g.QuadraticBezierTo(new Point(cx, cy), new Point(hrx, hry), true, false);
         }
         shaft.Freeze();
         var shaftPen = new Pen(fill, thickness) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round };
@@ -260,9 +264,6 @@ public static class AnnotationRenderer
         {
             case ArrowStyle.Solid:
             {
-                double h = Math.Max(10, thickness * 4);
-                double hw = h * 0.42;
-                double hrx = x2 - ux * h, hry = y2 - uy * h;
                 var geo = new StreamGeometry();
                 using (var g = geo.Open())
                 {
@@ -276,19 +277,16 @@ public static class AnnotationRenderer
             }
             case ArrowStyle.Line:
             {
-                double h = Math.Max(10, thickness * 3.5);
-                double hw = h * 0.38;
+                double hl = Math.Max(10, thickness * 3.5);
+                double hlw = hl * 0.38;
                 var lp = new Pen(fill, Math.Max(1.5, thickness * 0.8)) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round };
-                double hrx = x2 - ux * h, hry = y2 - uy * h;
-                dc.DrawLine(lp, new Point(x2, y2), new Point(hrx + nx * hw, hry + ny * hw));
-                dc.DrawLine(lp, new Point(x2, y2), new Point(hrx - nx * hw, hry - ny * hw));
+                double lhrx = x2 - ux * hl, lhry = y2 - uy * hl;
+                dc.DrawLine(lp, new Point(x2, y2), new Point(lhrx + nx * hlw, lhry + ny * hlw));
+                dc.DrawLine(lp, new Point(x2, y2), new Point(lhrx - nx * hlw, lhry - ny * hlw));
                 break;
             }
             case ArrowStyle.Double:
             {
-                double h = Math.Max(10, thickness * 4);
-                double hw = h * 0.42;
-                double hrx = x2 - ux * h, hry = y2 - uy * h;
                 double h2 = h * 0.6, hw2 = hw * 0.6;
                 // 璧风偣鍙嶅悜灏忓ご锛堟柟鍚?= P0 - C 鐨勫弽鍚?鈫?鐢?P0鈫扖 鐨勫垏绾匡級
                 double dx0 = x0 - cx, dy0 = y0 - cy;
