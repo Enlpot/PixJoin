@@ -47,14 +47,43 @@ public sealed class ScreenShot
 }
 
 /// <summary>
-/// 屏幕抓取（GDI BitBlt）。
-/// 进程为 Per-Monitor V2 感知，GetDC(NULL) + BitBlt 得到的是设备物理像素，
-/// 不含 DPI 虚拟化缩放，因此 100% / 125% / 150% / 200% 下选区与像素都能一一对应。
+/// 屏幕抓取入口。主后端 = Desktop Duplication（DDA，能截到 DirectComposition /
+/// WinUI3 / 视频 / 游戏等现代渲染内容），失败或不可用时自动降级 GDI BitBlt。
+/// 进程为 Per-Monitor V2 感知，两种后端输出均为设备物理像素，与选区一一对应。
 /// </summary>
 public static class ScreenCapture
 {
-    /// <summary>抓取整个虚拟屏幕（物理像素）。</summary>
+    private static readonly Lazy<DdaCaptureBackend> _dda = new(() => new DdaCaptureBackend());
+
+    /// <summary>当前生效的后端名（日志 / 设置显示）。</summary>
+    public static string ActiveBackendName { get; private set; } = "GDI";
+
+    /// <summary>抓取整个虚拟屏幕（物理像素）：DDA 优先，GDI 兜底。</summary>
     public static ScreenShot CaptureVirtualScreen()
+    {
+        try
+        {
+            if (_dda.Value.IsAvailable)
+            {
+                var shot = _dda.Value.CaptureVirtualScreen();
+                if (shot is not null)
+                {
+                    ActiveBackendName = _dda.Value.Name;
+                    return shot;
+                }
+            }
+        }
+        catch
+        {
+            // DDA 异常 → 降级 GDI
+        }
+
+        ActiveBackendName = "GDI";
+        return CaptureVirtualScreenGdi();
+    }
+
+    /// <summary>GDI BitBlt 抓取（兼容性兜底；对 DirectComposition 内容可能白屏）。</summary>
+    public static ScreenShot CaptureVirtualScreenGdi()
     {
         int x = Win32.GetSystemMetrics(Win32.SM_XVIRTUALSCREEN);
         int y = Win32.GetSystemMetrics(Win32.SM_YVIRTUALSCREEN);
@@ -70,7 +99,7 @@ public static class ScreenCapture
         return new ScreenShot(Blit(x, y, w, h), x, y);
     }
 
-    /// <summary>直接抓取指定物理像素区域（不缓存全屏，用于独立调用）。</summary>
+    /// <summary>直接抓取指定物理像素区域（不缓存全屏，用于独立调用；GDI 实现）。</summary>
     public static ScreenShot CaptureRegion(Rect physicalRect)
     {
         int x = (int)Math.Floor(physicalRect.Left);

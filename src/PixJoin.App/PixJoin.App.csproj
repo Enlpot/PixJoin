@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetFramework>net9.0-windows10.0.19041.0</TargetFramework>
     <Nullable>enable</Nullable>
     <!-- UseWindowsForms=true 会把 System.Windows.Forms / System.Drawing 变成全局 using，
          与 WPF 的 Point / Color / Image / Button 等类型冲突，因此这里关掉隐式 using，全部显式书写。 -->
@@ -10,6 +10,7 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <PlatformTarget>x64</PlatformTarget>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>PixJoin.App</RootNamespace>
     <AssemblyName>PixJoin</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
@@ -20,5 +21,37 @@
   <ItemGroup>
     <ProjectReference Include="..\PixJoin.Core\PixJoin.Core.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="RapidOcrNet" Version="3.1.0" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <PackageReference Include="Vortice.DXGI" Version="3.8.3" />
+  </ItemGroup>
+
+  <!--
+    原生库输出治理：
+    1) ORT / SkiaSharp 的 runtimes\win-x64\native 子目录不被 CoreCLR 默认探测，
+       而 System32 存在旧版 onnxruntime.dll(1.17) 会抢先加载导致 AccessViolation ——
+       统一复制到输出根目录（应用目录优先加载）。
+    2) VC++ 运行库 app-local 部署（lib\vc\x64，14.44）：系统 msvcp140.dll 可能是
+       被旧软件覆盖的 14.00 老版，ORT 1.24+ 依赖新导出，缺失时 DllMain 初始化失败。
+  -->
+  <Target Name="CopyNativeRuntimes" AfterTargets="Build">
+    <ItemGroup>
+      <NativeDlls Include="$(TargetDir)runtimes\win-x64\native\*.dll" />
+      <VcDlls Include="$(MSBuildProjectDirectory)\..\..\lib\vc\x64\*.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(NativeDlls)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(VcDlls)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="CopyNativeRuntimesPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <NativeDllsP Include="$(PublishDir)runtimes\win-x64\native\*.dll" />
+      <VcDllsP Include="$(MSBuildProjectDirectory)\..\..\lib\vc\x64\*.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(NativeDllsP)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(VcDllsP)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>

@@ -34,7 +34,8 @@ public sealed class StickerManager
     public StickerManager(SettingsService settings, IOcrEngine? ocr = null)
     {
         _settings = settings;
-        _ocr = ocr ?? new WindowsOcrEngine();
+        // 默认组合引擎：PP-OCRv4 高精度优先，系统引擎兜底
+        _ocr = ocr ?? new CompositeOcrEngine(new RapidOcrEngine(), new WindowsOcrEngine());
         _guideLayer = new GuideLayer();
         _guideLayer.Show();
         _groups.Changed += OnGroupsChanged;
@@ -104,6 +105,14 @@ public sealed class StickerManager
         RefreshGroupVisuals();
         KickOffOcr(window);
         return window;
+    }
+
+    /// <summary>截图后「标注」：创建贴图并立即进入标注模式（标注固化后即成品，可再贴）。</summary>
+    public StickerWindow CreateStickerAndAnnotate(BitmapSource image, Point physicalTopLeft)
+    {
+        var window = CreateSticker(image, physicalTopLeft);
+        window?.EnterAnnotationMode();
+        return window!;
     }
 
     // ---------------- OCR 文字识别 ----------------
@@ -207,6 +216,79 @@ public sealed class StickerManager
         foreach (var w in _windows.Values) w.SetClickThrough(on);
     }
 
+    // ---------------- 标注 / 图像处理 ----------------
+
+    /// <summary>标注固化：渲染进原图并替换（保留首版快照供「撤销上一步」）。</summary>
+    public void CommitAnnotations(StickerWindow window, IReadOnlyList<Annotation> annotations)
+    {
+        var s = window.Sticker;
+        s.UndoImage ??= s.Image;
+        var rendered = AnnotationRenderer.Render(s.Image, annotations);
+        if (ReferenceEquals(rendered, s.Image)) return;
+        s.Image = rendered;
+        s.OcrWords = null;   // 像素已变，OCR 结果失效
+        window.RefreshImage();
+    }
+
+    /// <summary>应用图像处理操作（灰度 / 反色 / 模糊 / 锐化 / 旋转 / 翻转）。尺寸变化时同步贴图几何。</summary>
+    public void ApplyImageOp(StickerWindow window, Func<BitmapSource, BitmapSource> op)
+    {
+        var s = window.Sticker;
+        var old = s.Image;
+        var next = op(old);
+        if (ReferenceEquals(next, old)) return;
+
+        s.UndoImage ??= old;
+        s.Image = next;
+        s.OcrWords = null;
+        if (next.PixelWidth != old.PixelWidth || next.PixelHeight != old.PixelHeight)
+        {
+            s.W *= next.PixelWidth / (double)old.PixelWidth;
+            s.H *= next.PixelHeight / (double)old.PixelHeight;
+        }
+        window.RefreshImage();
+        RefreshGroupVisuals();   // 组合成员尺寸变化后刷新组合轮廓
+    }
+
+    /// <summary>撤销上一步标注 / 图像处理（恢复首版快照）。返回是否已恢复。</summary>
+    public bool UndoImageOp(StickerWindow window)
+    {
+        var s = window.Sticker;
+        if (s.UndoImage is null) return false;
+        var restored = s.UndoImage;
+        s.W *= restored.PixelWidth / (double)s.Image.PixelWidth;
+        s.H *= restored.PixelHeight / (double)s.Image.PixelHeight;
+        s.Image = restored;
+        s.UndoImage = null;
+        s.OcrWords = null;
+        window.RefreshImage();
+        RefreshGroupVisuals();
+        return true;
+    }
+
+    /// <summary>Ctrl+Z 全局快捷键：撤销鼠标悬停贴图的标注上一步。返回是否已处理。</summary>
+    public bool TryUndoAnnotationUnderCursor()
+    {
+        if (!TryGetWindowUnderCursor(out var w)) return false;
+        if (!w.IsAnnotating) return false;
+        w.UndoAnnotationStep();
+        return true;
+    }
+
+    private bool TryGetWindowUnderCursor(out StickerWindow? window)
+    {
+        Win32.GetPhysicalCursorPos(out var p);
+        foreach (var w in _windows.Values)
+        {
+            if (w.Handle == IntPtr.Zero || !Win32.GetWindowRect(w.Handle, out var r)) continue;
+            if (p.X < r.Left || p.X >= r.Right || p.Y < r.Top || p.Y >= r.Bottom) continue;
+            window = w;
+            return true;
+        }
+        window = null;
+        return false;
+    }
+
     public void OnWindowClosed(StickerWindow window)
     {
         var id = window.Sticker.Id;
@@ -284,6 +366,9 @@ public sealed class StickerManager
         {
             if (w.Handle == IntPtr.Zero || !Win32.GetWindowRect(w.Handle, out var r)) continue;
             if (p.X < r.Left || p.X >= r.Right || p.Y < r.Top || p.Y >= r.Bottom) continue;
+
+            // 标注模式：ESC 固化并退出标注，不关闭贴图
+            if (w.TryExitAnnotationMode()) return true;
 
             // 有活动文字选区：ESC 先取消选择，不关闭贴图
             if (w.CancelTextSelectionIfActive()) return true;

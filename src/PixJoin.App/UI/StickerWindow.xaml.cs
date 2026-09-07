@@ -1,10 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using PixJoin.App.Native;
 using PixJoin.Core.Models;
@@ -40,6 +42,19 @@ public sealed partial class StickerWindow : Window
     private bool _textSelectable = true;         // 贴图级「文本可选择」开关（右键菜单）
     private readonly SolidColorBrush _selectBrush = new(Color.FromArgb(0x55, 0x33, 0x88, 0xFF));
     private FloatingBarWindow? _floating;        // 文字选择浮动工具条（独立小窗口，可超出贴图窗口）
+
+    // ---- 标注 ----
+    private AnnotationBarWindow? _annotBar;
+    private readonly List<Annotation> _annotations = new();
+    private AnnotationTool _annotTool = AnnotationTool.Arrow;
+    private Color _annotColor = Color.FromRgb(0xE5, 0x39, 0x35);
+    private double _annotThickness = 4;
+    private bool _annotating;                    // 标注模式
+    private bool _annotDrawing;                  // 正在拖动绘制
+    private Point _annotStart;                   // 拖动起点（窗口 DIP）
+    private Point _annotLast;                    // 当前点（窗口 DIP）
+    private List<double> _annotPenPts = new();
+    private int _annotNumberSeq;
 
     public Sticker Sticker { get; }
 
@@ -165,6 +180,15 @@ public sealed partial class StickerWindow : Window
     private void OnBodyMouseDown(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton != MouseButton.Left) return;
+
+        // 标注模式：全部交给标注绘制
+        if (_annotating)
+        {
+            HandleAnnotationDown(e.GetPosition(this));
+            e.Handled = true;
+            return;
+        }
+
         if (e.Source is Thumb) return;   // 手柄自己处理
 
         // 锁定：禁止一切主体交互（右键菜单仍可用）
@@ -195,6 +219,12 @@ public sealed partial class StickerWindow : Window
 
     private void OnBodyMouseMove(object sender, MouseEventArgs e)
     {
+        if (_annotating)
+        {
+            HandleAnnotationMove(e.GetPosition(this));
+            return;
+        }
+
         if (_owner.IsDragging) { _owner.UpdateDrag(this); return; }
 
         if (_selectingText)
@@ -208,6 +238,13 @@ public sealed partial class StickerWindow : Window
 
     private void OnBodyMouseUp(object sender, MouseButtonEventArgs e)
     {
+        if (_annotating)
+        {
+            HandleAnnotationUp(e.GetPosition(this));
+            e.Handled = true;
+            return;
+        }
+
         if (_selectingText)
         {
             EndTextSelection(e.GetPosition(this));
@@ -239,6 +276,9 @@ public sealed partial class StickerWindow : Window
 
     private void OnRightButtonUp(object sender, MouseButtonEventArgs e)
     {
+        // 标注模式：右键不弹菜单（避免误操作），Esc / ✓ 完成退出
+        if (_annotating) { e.Handled = true; return; }
+
         var menu = BuildContextMenu();
         menu.IsOpen = true;
         e.Handled = true;
@@ -246,6 +286,9 @@ public sealed partial class StickerWindow : Window
 
     private void OnMouseWheel(object sender, MouseWheelEventArgs e)
     {
+        // 标注模式：滚轮不缩放
+        if (_annotating) { e.Handled = true; return; }
+
         // 锁定：滚轮缩放 / 调透明度都禁用
         if (Sticker.IsLocked) { e.Handled = true; return; }
 
@@ -367,6 +410,29 @@ public sealed partial class StickerWindow : Window
             if (!_textSelectable) ClearTextSelection();
         };
         menu.Items.Add(textSelect);
+
+        // ---- 标注 / 图像处理 ----
+        var annotate = new MenuItem { Header = "标注…", IsEnabled = !Sticker.IsLocked };
+        annotate.Click += (_, _) => EnterAnnotationMode();
+        menu.Items.Add(annotate);
+
+        var imgOps = new MenuItem { Header = "图像处理", IsEnabled = !Sticker.IsLocked };
+        AddImageOp(imgOps, "灰度", ImageProcessor.ToGrayscale);
+        AddImageOp(imgOps, "反色", ImageProcessor.Invert);
+        AddImageOp(imgOps, "模糊", ImageProcessor.Blur);
+        AddImageOp(imgOps, "锐化", ImageProcessor.Sharpen);
+        imgOps.Items.Add(new Separator());
+        AddImageOp(imgOps, "旋转 90°", b => ImageProcessor.Rotate(b, 90));
+        AddImageOp(imgOps, "旋转 180°", b => ImageProcessor.Rotate(b, 180));
+        AddImageOp(imgOps, "旋转 270°", b => ImageProcessor.Rotate(b, 270));
+        imgOps.Items.Add(new Separator());
+        AddImageOp(imgOps, "水平翻转", ImageProcessor.FlipHorizontal);
+        AddImageOp(imgOps, "垂直翻转", ImageProcessor.FlipVertical);
+        menu.Items.Add(imgOps);
+
+        var undoOp = new MenuItem { Header = "撤销标注 / 处理", IsEnabled = Sticker.UndoImage is not null };
+        undoOp.Click += (_, _) => _owner.UndoImageOp(this);
+        menu.Items.Add(undoOp);
 
         menu.Items.Add(new Separator());
 
@@ -563,6 +629,14 @@ public sealed partial class StickerWindow : Window
     }
 
     private void OnDismissSelection() => ClearTextSelection();
+
+    /// <summary>给图像处理子菜单添加一项。</summary>
+    private void AddImageOp(MenuItem root, string header, Func<BitmapSource, BitmapSource> op)
+    {
+        var item = new MenuItem { Header = header };
+        item.Click += (_, _) => _owner.ApplyImageOp(this, op);
+        root.Items.Add(item);
+    }
     /// <summary>鼠标穿透（托盘全局开关）：点击事件穿过贴图到下层窗口。</summary>
     public void SetClickThrough(bool on)
     {
@@ -572,10 +646,310 @@ public sealed partial class StickerWindow : Window
         if (next != ex) Win32.SetWindowLong(Handle, Win32.GWL_EXSTYLE, next);
     }
 
+    // ---------------- 标注模式 ----------------
+
+    /// <summary>进入标注模式：显示工具条与预览层，暂停拖动 / 缩放 / 文字选择。</summary>
+    public void EnterAnnotationMode()
+    {
+        if (_annotating || Sticker.IsLocked) return;
+        _annotating = true;
+        _annotNumberSeq = 0;
+        ClearTextSelection();
+
+        if (_annotBar is null)
+        {
+            _annotBar = new AnnotationBarWindow();
+            _annotBar.Owner = this;
+            _annotBar.ToolChanged += t => _annotTool = t;
+            _annotBar.ColorChanged += c => _annotColor = c;
+            _annotBar.ThicknessChanged += t => _annotThickness = t;
+            _annotBar.UndoRequested += UndoAnnotationStep;
+            _annotBar.DoneRequested += () => ExitAnnotationMode(commit: true);
+        }
+        PositionAnnotationBar();
+        _annotBar.Show();
+
+        OverlayLayer.Visibility = Visibility.Visible;
+        AnnotationLayer.Visibility = Visibility.Visible;
+        HandleLayer.Visibility = Visibility.Collapsed;
+        Cursor = Cursors.Cross;
+    }
+
+    /// <summary>退出标注模式。commit=true 时把标注固化进图片（可用右键「撤销标注」回退）。</summary>
+    public void ExitAnnotationMode(bool commit)
+    {
+        if (!_annotating) return;
+        _annotating = false;
+        _annotDrawing = false;
+        if (IsMouseCaptured) ReleaseMouseCapture();
+
+        AnnotationLayer.Children.Clear();
+        AnnotationLayer.Visibility = Visibility.Collapsed;
+        _annotBar?.Hide();
+        Cursor = Cursors.Arrow;
+
+        if (commit && _annotations.Count > 0)
+        {
+            _owner.CommitAnnotations(this, _annotations);
+        }
+        _annotations.Clear();
+        _annotPenPts.Clear();
+
+        // 恢复叠加层可见性（有 OCR 词才显示）与缩放手柄
+        OverlayLayer.Visibility = Sticker.OcrWords is { Count: > 0 } ? Visibility.Visible : Visibility.Collapsed;
+        RefreshFrame();
+    }
+
+    /// <summary>ESC / Ctrl+Z 钩子入口：标注模式下 Esc=固化退出、Ctrl+Z=撤销一步。返回是否拦截。</summary>
+    public bool TryExitAnnotationMode()
+    {
+        if (!_annotating) return false;
+        ExitAnnotationMode(commit: true);
+        return true;
+    }
+
+    /// <summary>撤销上一步标注（标注模式内 Ctrl+Z / 工具条撤销按钮）。</summary>
+    public void UndoAnnotationStep()
+    {
+        if (!_annotating || _annotations.Count == 0) return;
+        _annotations.RemoveAt(_annotations.Count - 1);
+        RefreshAnnotationLayer();
+    }
+
+    private void PositionAnnotationBar()
+    {
+        if (_annotBar is null) return;
+        _annotBar.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        double bw = _annotBar.DesiredSize.Width;
+        double x = Left + ActualWidth + 8;
+        if (x + bw > SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth)
+            x = Left - bw - 8;
+        _annotBar.Left = Math.Max(SystemParameters.VirtualScreenLeft, x);
+        _annotBar.Top = Math.Max(SystemParameters.VirtualScreenTop, Top);
+    }
+
+    private void HandleAnnotationDown(Point p)
+    {
+        if (_annotTool == AnnotationTool.Text || _annotTool == AnnotationTool.Number)
+        {
+            // 落点工具：立即生成元素，不进入拖动
+            var img = ToImageCoord(p);
+            if (_annotTool == AnnotationTool.Text)
+            {
+                var dlg = new TextInputWindow { Owner = this };
+                if (dlg.ShowDialog() == true && !string.IsNullOrEmpty(dlg.ResultText))
+                {
+                    _annotations.Add(new Annotation
+                    {
+                        Tool = AnnotationTool.Text, X = img.X, Y = img.Y,
+                        Text = dlg.ResultText, Color = _annotColor, Thickness = _annotThickness,
+                    });
+                    RefreshAnnotationLayer();
+                }
+            }
+            else
+            {
+                _annotNumberSeq++;
+                _annotations.Add(new Annotation
+                {
+                    Tool = AnnotationTool.Number, X = img.X, Y = img.Y,
+                    Number = _annotNumberSeq, Color = _annotColor, Thickness = _annotThickness,
+                });
+                RefreshAnnotationLayer();
+            }
+            return;
+        }
+
+        _annotDrawing = true;
+        _annotStart = p;
+        _annotLast = p;
+        _annotPenPts.Clear();
+        var ip = ToImageCoord(p);
+        _annotPenPts.Add(ip.X);
+        _annotPenPts.Add(ip.Y);
+        CaptureMouse();
+        RefreshAnnotationLayer();
+    }
+
+    private void HandleAnnotationMove(Point p)
+    {
+        if (!_annotDrawing) return;
+        _annotLast = p;
+        if (_annotTool == AnnotationTool.Pen)
+        {
+            var ip = ToImageCoord(p);
+            _annotPenPts.Add(ip.X);
+            _annotPenPts.Add(ip.Y);
+        }
+        RefreshAnnotationLayer();
+    }
+
+    private void HandleAnnotationUp(Point p)
+    {
+        if (!_annotDrawing) return;
+        _annotDrawing = false;
+        if (IsMouseCaptured) ReleaseMouseCapture();
+        _annotLast = p;
+
+        var s = ToImageCoord(_annotStart);
+        var e = ToImageCoord(_annotLast);
+
+        switch (_annotTool)
+        {
+            case AnnotationTool.Rect:
+            case AnnotationTool.Highlight:
+            case AnnotationTool.Mosaic:
+                _annotations.Add(new Annotation
+                {
+                    Tool = _annotTool,
+                    X = Math.Min(s.X, e.X), Y = Math.Min(s.Y, e.Y),
+                    W = Math.Abs(e.X - s.X), H = Math.Abs(e.Y - s.Y),
+                    Color = _annotColor, Thickness = _annotThickness,
+                });
+                break;
+
+            case AnnotationTool.Arrow:
+                _annotations.Add(new Annotation
+                {
+                    Tool = AnnotationTool.Arrow, X = s.X, Y = s.Y, W = e.X - s.X, H = e.Y - s.Y,
+                    Color = _annotColor, Thickness = _annotThickness,
+                });
+                break;
+
+            case AnnotationTool.Pen:
+                if (_annotPenPts.Count >= 4)
+                {
+                    _annotations.Add(new Annotation
+                    {
+                        Tool = AnnotationTool.Pen, Points = _annotPenPts.ToArray(),
+                        Color = _annotColor, Thickness = _annotThickness,
+                    });
+                }
+                _annotPenPts.Clear();
+                break;
+        }
+
+        RefreshAnnotationLayer();
+    }
+
+    /// <summary>把全部标注 + 进行中元素画到预览层（DIP 坐标，物理像素按显示缩放比换算）。</summary>
+    private void RefreshAnnotationLayer()
+    {
+        AnnotationLayer.Children.Clear();
+        foreach (var a in _annotations) AddAnnotationPreview(a);
+        if (_annotDrawing)
+        {
+            // 进行中：用起点/终点构造临时预览
+            var s = ToImageCoord(_annotStart);
+            var e = ToImageCoord(_annotLast);
+            var tool = _annotTool == AnnotationTool.Pen
+                ? new Annotation { Tool = AnnotationTool.Pen, Points = _annotPenPts.ToArray(), Color = _annotColor, Thickness = _annotThickness }
+                : new Annotation { Tool = _annotTool, X = Math.Min(s.X, e.X), Y = Math.Min(s.Y, e.Y), W = Math.Abs(e.X - s.X), H = Math.Abs(e.Y - s.Y), Color = _annotColor, Thickness = _annotThickness };
+            AddAnnotationPreview(tool);
+        }
+    }
+
+    /// <summary>物理像素 → 窗口 DIP（用于预览层定位）。</summary>
+    private Point ToDip(Point phys) => new(
+        phys.X * Img.ActualWidth / Sticker.Image.PixelWidth,
+        phys.Y * Img.ActualHeight / Sticker.Image.PixelHeight);
+
+    private void AddAnnotationPreview(Annotation a)
+    {
+        double sx = Img.ActualWidth / Sticker.Image.PixelWidth;
+        double sy = Img.ActualHeight / Sticker.Image.PixelHeight;
+
+        var brush = new SolidColorBrush(a.Color);
+        brush.Freeze();
+        var pen = new Pen(brush, Math.Max(1, a.Thickness * (sx + sy) / 2));
+        pen.Freeze();
+
+        switch (a.Tool)
+        {
+            case AnnotationTool.Rect:
+            case AnnotationTool.Highlight:
+            case AnnotationTool.Mosaic:
+            {
+                var fill = a.Tool == AnnotationTool.Highlight ? new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xE2, 0x3C))
+                        : a.Tool == AnnotationTool.Mosaic ? new SolidColorBrush(Color.FromArgb(0x33, 0x00, 0x00, 0x00))
+                        : null;
+                fill?.Freeze();
+                var r = new Rectangle { Width = a.W * sx, Height = a.H * sy, Stroke = a.Tool == AnnotationTool.Rect ? brush : null, Fill = fill };
+                Canvas.SetLeft(r, a.X * sx);
+                Canvas.SetTop(r, a.Y * sy);
+                AnnotationLayer.Children.Add(r);
+                break;
+            }
+
+            case AnnotationTool.Arrow:
+            {
+                var line = new Line
+                {
+                    X1 = a.X * sx, Y1 = a.Y * sy, X2 = (a.X + a.W) * sx, Y2 = (a.Y + a.H) * sy,
+                    Stroke = brush, StrokeThickness = Math.Max(1, a.Thickness * (sx + sy) / 2),
+                    StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round,
+                };
+                AnnotationLayer.Children.Add(line);
+                break;
+            }
+
+            case AnnotationTool.Pen:
+            {
+                if (a.Points is { Length: >= 4 })
+                {
+                    var pts = new PointCollection();
+                    for (int i = 0; i < a.Points.Length; i += 2)
+                        pts.Add(new Point(a.Points[i] * sx, a.Points[i + 1] * sy));
+                    var pl = new Polyline { Points = pts, Stroke = brush, StrokeThickness = Math.Max(1, a.Thickness * (sx + sy) / 2), StrokeLineJoin = PenLineJoin.Round };
+                    AnnotationLayer.Children.Add(pl);
+                }
+                break;
+            }
+
+            case AnnotationTool.Text:
+            {
+                var tb = new TextBlock { Text = a.Text, Foreground = brush, FontSize = Math.Max(10, a.Thickness * 4 * (sx + sy) / 2) };
+                Canvas.SetLeft(tb, a.X * sx);
+                Canvas.SetTop(tb, a.Y * sy);
+                AnnotationLayer.Children.Add(tb);
+                break;
+            }
+
+            case AnnotationTool.Number:
+            {
+                double r = Math.Max(8, a.Thickness * 2.5 * (sx + sy) / 2);
+                var ell = new Ellipse { Width = r * 2, Height = r * 2, Fill = brush };
+                Canvas.SetLeft(ell, a.X * sx - r);
+                Canvas.SetTop(ell, a.Y * sy - r);
+                AnnotationLayer.Children.Add(ell);
+                var tb = new TextBlock { Text = a.Number.ToString(), Foreground = Brushes.White, FontSize = r * 1.3, TextAlignment = TextAlignment.Center };
+                Canvas.SetLeft(tb, a.X * sx - r * 0.55);
+                Canvas.SetTop(tb, a.Y * sy - r * 0.8);
+                AnnotationLayer.Children.Add(tb);
+                break;
+            }
+        }
+    }
+
+    /// <summary>图片被标注 / 图像处理替换后刷新显示（更新源、窗口尺寸、叠加层状态）。</summary>
+    public void RefreshImage()
+    {
+        Img.Source = Sticker.Image;
+        Width = Sticker.W;
+        Height = Sticker.H;
+        if (Sticker.OcrWords is null)
+            OverlayLayer.Visibility = Visibility.Collapsed;
+        RefreshFrame();
+    }
+
+    /// <summary>是否处于标注模式（管理器钩子 / 菜单判断用）。</summary>
+    public bool IsAnnotating => _annotating;
+
     protected override void OnClosed(EventArgs e)
     {
         _hwndSource?.RemoveHook(_hook);
         _floating?.Close();   // 独立浮动条随贴图关闭（Owner 机制也会关，双保险）
+        _annotBar?.Close();   // 标注工具条同理
         _owner.OnWindowClosed(this);
         base.OnClosed(e);
     }

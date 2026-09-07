@@ -1,7 +1,7 @@
 name: Release
 
-# 推送 v* 标签（如 v0.1.1）时自动构建并发布 GitHub Release；
-# 也可手动触发（workflow_dispatch）补发/重跑，需已存在对应 tag
+# 推 v* 标签（如 v0.3.0）时自动构建并发 GitHub Release；
+# 也可手动触发（workflow_dispatch）补跑，需已存在对应 tag
 on:
   push:
     tags:
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '要发布的 tag（如 v0.2.0，需已推送该 tag）'
+        description: '要发布的 tag（如 v0.3.0，需已推送该 tag）'
         required: true
         type: string
 
@@ -23,12 +23,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET 8
+      - name: Setup .NET 9
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '9.0.x'
 
-      # 版本号 = tag 名（如 v0.1.1），用于产物命名；手动触发时取输入 tag
+      # 版本号 = tag 名（如 v0.3.0），用于产物命名；手动触发时取输入 tag
       - name: Determine version
         id: ver
         shell: pwsh
@@ -46,22 +46,36 @@ jobs:
       - name: Unit tests
         run: dotnet run --project tests/PixJoin.Core.Tests -c Release
 
-      - name: Publish self-contained single-file (win-x64, 免装运行时)
+      - name: Publish self-contained (win-x64, 免安装运行时)
+        # 单文件仅打包托管程序集；onnxruntime/libSkiaSharp/VC 等原生库平铺输出目录
+        # （IncludeNativeLibrariesForSelfExtract 会触发 ORT 初始化 AV，已实测 0xC0000005）
         shell: pwsh
         run: |
           dotnet publish src/PixJoin.App -c Release -r win-x64 `
             --self-contained true `
             -p:PublishSingleFile=true `
-            -p:IncludeNativeLibrariesForSelfExtract=true `
             -o publish/win-x64
 
-      - name: Publish framework-dependent single-file (win-x64, 需 .NET 8 Desktop Runtime)
+      - name: Publish framework-dependent single-file (win-x64, 需 .NET 9 Desktop Runtime)
         shell: pwsh
         run: |
           dotnet publish src/PixJoin.App -c Release -r win-x64 `
             --self-contained false `
             -p:PublishSingleFile=true `
             -o publish/win-x64-fx
+
+      # 中文 v4 模型随包（离线开箱即用 OCR）；下载失败则留待应用首启自动下载
+      - name: Bundle OCR v4 models (best effort)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          foreach ($dir in @("publish/win-x64", "publish/win-x64-fx")) {
+            $v4 = Join-Path $dir "models/v4"
+            New-Item -ItemType Directory -Force -Path $v4 | Out-Null
+            curl.exe -sL --max-time 120 -o (Join-Path $v4 "ch_PP-OCRv4_det_mobile.onnx") "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_mobile.onnx"
+            curl.exe -sL --max-time 180 -o (Join-Path $v4 "ch_PP-OCRv4_rec_mobile.onnx") "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/rec/ch_PP-OCRv4_rec_mobile.onnx"
+            curl.exe -sL --max-time 60 -o (Join-Path $v4 "ppocr_keys_v1.txt") "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/paddle/PP-OCRv4/rec/ch_PP-OCRv4_rec_mobile/ppocr_keys_v1.txt"
+          }
 
       - name: Smoke test (best effort, headless runner 无真实桌面)
         shell: pwsh
@@ -70,16 +84,17 @@ jobs:
           & "publish/win-x64/PixJoin.exe" --selftest
 
       - name: Package zips + checksums
+        # 整个发布目录进包（exe + onnxruntime 等原生库 + models/），缺一不可
         shell: pwsh
         run: |
           $v = "${{ steps.ver.outputs.version }}"
           $self  = "publish/PixJoin-$v-win-x64.zip"
           $fx    = "publish/PixJoin-$v-win-x64-fx.zip"
           New-Item -ItemType Directory -Force -Path publish/dist, publish/dist-fx | Out-Null
-          Copy-Item publish/win-x64/PixJoin.exe    publish/dist/PixJoin.exe    -Force
-          Copy-Item publish/win-x64-fx/PixJoin.exe publish/dist-fx/PixJoin.exe -Force
-          Compress-Archive -Path publish/dist/PixJoin.exe    -DestinationPath $self -Force
-          Compress-Archive -Path publish/dist-fx/PixJoin.exe -DestinationPath $fx   -Force
+          Copy-Item publish/win-x64/*    publish/dist/    -Recurse -Force
+          Copy-Item publish/win-x64-fx/* publish/dist-fx/ -Recurse -Force
+          Compress-Archive -Path publish/dist/*    -DestinationPath $self -Force
+          Compress-Archive -Path publish/dist-fx/* -DestinationPath $fx   -Force
           $lines = @(
             "SHA256($(Split-Path $self -Leaf)) = $((Get-FileHash $self -Algorithm SHA256).Hash)",
             "SHA256($(Split-Path $fx -Leaf))   = $((Get-FileHash $fx   -Algorithm SHA256).Hash)"
@@ -95,35 +110,3 @@ jobs:
             publish/PixJoin-${{ steps.ver.outputs.version }}-win-x64.zip
             publish/PixJoin-${{ steps.ver.outputs.version }}-win-x64-fx.zip
             publish/SHA256SUMS.txt
-          name: PixJoin ${{ steps.ver.outputs.version }}
-          body: |
-            ## PixJoin ${{ steps.ver.outputs.version }}
-
-            Windows 截图贴图工具：截图 → 钉在桌面（贴图）→ 靠近自动吸附组合成一张，一键导出 / 复制为单张图片。
-
-            ### v0.2.0 新增
-            - **文字识别（OCR）**：贴图后自动识别图中文字（Windows 系统引擎，离线零依赖）。光标悬停文字显示竖条（IBeam），左键拖动按词选择（跨行连续），松手后浮动「复制」按钮；`Shift+C` 复制整张贴图全部文字
-            - **贴图管理**：隐藏其他贴图、贴图鼠标穿透、锁定、`Alt` 按住强制移动
-            - 剪贴板写入改为原生实现 + 自动重试，不再因剪贴板被占用而崩溃
-
-            ### 下载
-            - **`PixJoin-${{ steps.ver.outputs.version }}-win-x64.zip`**（自包含，约 60MB）：解压双击即用，无需安装任何运行时，推荐给普通用户。
-            - **`PixJoin-${{ steps.ver.outputs.version }}-win-x64-fx.zip`**（框架依赖，约 120KB）：体积小，但需已安装 [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0)。
-
-            ### 使用
-            解压后双击 `PixJoin.exe` 即可。
-
-            | 操作 | 按键 |
-            | --- | --- |
-            | 开始截图 | Ctrl+Shift+A |
-            | 拆分组合中的贴图 | 按住 Ctrl 拖出 |
-            | 关闭贴图 | 双击 |
-            | 缩放贴图 | 滚轮 |
-            | 关闭悬停贴图 | ESC |
-            | 复制整张贴图文字 | Shift+C（悬停在贴图上） |
-            | 强制移动贴图 | 按住 Alt 拖动 |
-            | 导出 / 复制 | 右键贴图 |
-            | 设置 | 右键托盘 → 设置… |
-
-            ### 系统要求
-            Windows 10 / 11，x64

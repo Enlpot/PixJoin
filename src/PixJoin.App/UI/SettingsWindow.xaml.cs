@@ -97,7 +97,11 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        bool modifierOnly = e.Key is Key.LeftCtrl or Key.RightCtrl or Key.LeftShift or Key.RightShift
+        // Alt 组合键时 WPF 把 e.Key 报成 Key.System，真正的按键在 e.SystemKey
+        // （否则 VirtualKeyFromKey 返回 0x00 → 显示 "0x00" 且注册失败无法使用）
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+
+        bool modifierOnly = key is Key.LeftCtrl or Key.RightCtrl or Key.LeftShift or Key.RightShift
             or Key.LeftAlt or Key.RightAlt or Key.LWin or Key.RWin;
         if (modifierOnly) { e.Handled = true; return; }
 
@@ -114,7 +118,7 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        uint vk = (uint)KeyInterop.VirtualKeyFromKey(e.Key);
+        uint vk = (uint)KeyInterop.VirtualKeyFromKey(key);
         _newModifiers = mods;
         _newVk = vk;
         TxtHotkey.Text = HotkeyText.Build(mods, vk);

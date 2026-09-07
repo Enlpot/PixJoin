@@ -37,6 +37,7 @@ public partial class App : Application
     private StickerManager _stickers = null!;
     private HotKeyManager _hotkeys = null!;
     private NotifyIcon? _trayIcon;
+    private ToolStripMenuItem? _trayCaptureItem;   // 托盘[截图]菜单项，设置变更后同步快捷键文本
     private Icon? _appIcon;
     private CaptureOverlay? _capture;
     private SettingsWindow? _settingsWindow;
@@ -53,6 +54,11 @@ public partial class App : Application
         if (e.Args.Contains("--selftest", StringComparer.OrdinalIgnoreCase))
         {
             RunSelfTest();
+            return;
+        }
+        if (e.Args.Contains("--selftest-ocr", StringComparer.OrdinalIgnoreCase))
+        {
+            RunSelfTestOcr();
             return;
         }
 
@@ -172,6 +178,16 @@ public partial class App : Application
                 return Win32.CallNextHookEx(_escHook, nCode, wParam, lParam);
             }
 
+            // Ctrl+Z：撤销鼠标悬停贴图的标注上一步（仅标注模式）
+            if (vk == (int)'Z' && Win32.IsKeyDown(Win32.VK_CONTROL))
+            {
+                if (_capture is not null && _capture.IsLoaded && _capture.IsVisible)
+                    return Win32.CallNextHookEx(_escHook, nCode, wParam, lParam);
+                if (_stickers.TryUndoAnnotationUnderCursor())
+                    return new IntPtr(1);
+                return Win32.CallNextHookEx(_escHook, nCode, wParam, lParam);
+            }
+
             if (vk == Win32.VK_ESCAPE)
             {
                 // 截图 overlay 活跃时，ESC 由截图流程处理（取消 / 重置选区）
@@ -221,6 +237,8 @@ public partial class App : Application
             ReRegisterCaptureHotKey();
             ApplyAutoStart(_settings.Current.StartWithWindows);
             _trayIcon!.Text = $"PixJoin —— 截图 / 贴图 / 吸附组合   [{_settings.Current.HotkeyDisplay}]";
+            if (_trayCaptureItem is not null)
+                _trayCaptureItem.Text = $"截图 ({_settings.Current.HotkeyDisplay})";
         });
         _settingsWindow.Show();
         _settingsWindow.Activate();
@@ -317,6 +335,10 @@ public partial class App : Application
                 _stickers.CreateSticker(result.Bitmap, result.PhysicalRect.TopLeft);
                 break;
 
+            case CaptureAction.Annotate:
+                _stickers.CreateStickerAndAnnotate(result.Bitmap, result.PhysicalRect.TopLeft);
+                break;
+
             case CaptureAction.Copy:
                 if (!ClipboardService.TrySetImage(result.Bitmap))
                     System.Windows.MessageBox.Show("复制失败：剪贴板正被其它程序占用，请稍后重试。",
@@ -356,7 +378,8 @@ public partial class App : Application
     {
         var menu = new ContextMenuStrip();
 
-        var capture = new ToolStripMenuItem($"截图 ({_settings.Current.HotkeyDisplay})");
+        _trayCaptureItem = new ToolStripMenuItem($"截图 ({_settings.Current.HotkeyDisplay})");
+        var capture = _trayCaptureItem;
         capture.Click += (_, _) => StartCapture();
         menu.Items.Add(capture);
 
@@ -552,6 +575,73 @@ public partial class App : Application
     // ---------------- 无界面自检 ----------------
 
     /// <summary>
+    /// OCR 端到端自检：PixJoin.exe --selftest-ocr
+    /// 内存构造含中文的位图 → 组合引擎（PP-OCRv4 优先）识别 → 校验词框数量与坐标。
+    /// 结果写到 selftest/ocr_result.txt，退出码 0/1。
+    /// </summary>
+    private void RunSelfTestOcr()
+    {
+        var lines = new List<string>();
+        string outDir = Path.Combine(SettingsService.ConfigDirectory, "selftest");
+        try { Directory.CreateDirectory(outDir); } catch { }
+        int code = 0;
+
+        try
+        {
+            var engine = new CompositeOcrEngine(new RapidOcrEngine(), new WindowsOcrEngine());
+            lines.Add($"engine available={engine.IsAvailable}");
+
+            // 内存画一张中文测试图（WPF 渲染，与真实贴图同一 BitmapSource 路径）
+            int w = 640, h = 160;
+            var rtb = new RenderTargetBitmap(w, h, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+            var dv = new System.Windows.Media.DrawingVisual();
+            using (var dc = dv.RenderOpen())
+            {
+                dc.DrawRectangle(System.Windows.Media.Brushes.White, null,
+                    new System.Windows.Rect(0, 0, w, h));
+                var text = new System.Windows.Media.FormattedText(
+                    "你好世界 PixJoin 123",
+                    System.Globalization.CultureInfo.CurrentCulture,
+                    System.Windows.FlowDirection.LeftToRight,
+                    new System.Windows.Media.Typeface("Microsoft YaHei"), 40,
+                    System.Windows.Media.Brushes.Black, 1.0);
+                dc.DrawText(text, new System.Windows.Point(20, 50));
+            }
+            rtb.Render(dv);
+            rtb.Freeze();
+
+            var result = engine.Recognize(rtb);
+            if (result is null || result.Words.Count == 0)
+                throw new InvalidOperationException("OCR 无识别结果");
+
+            lines.Add($"OK words={result.Words.Count}");
+            lines.Add($"OK full=[{result.FullText.Replace("\n", "\\n")}]");
+            foreach (var word in result.Words.Take(10))
+                lines.Add($"OK word=[{word.Text}] x={word.X:F0} y={word.Y:F0} w={word.W:F0} h={word.H:F0}");
+
+            var hit = result.Words.Find(wd => wd.HitTest(20 + 40, 50 + 60));
+            lines.Add($"hit-test @(60,110): {(hit is null ? "MISS" : hit.Text)}");
+
+            // 导出测试图供人工核对
+            var enc = new PngBitmapEncoder();
+            enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(rtb));
+            using (var fs = System.IO.File.Create(Path.Combine(outDir, "ocr_input.png")))
+                enc.Save(fs);
+
+            lines.Add("SELFTEST_OCR_PASS");
+        }
+        catch (Exception ex)
+        {
+            code = 1;
+            lines.Add("SELFTEST_OCR_FAIL: " + ex.GetType().Name + ": " + ex.Message);
+            LogException(ex);
+        }
+
+        try { File.WriteAllLines(Path.Combine(outDir, "ocr_result.txt"), lines); } catch { }
+        Shutdown(code);
+    }
+
+    /// <summary>
     /// 端到端自检：抓全屏（真实 GDI BitBlt）→ 裁两块相邻区域 → 建贴图并组合 →
     /// 导出 PNG。不创建任何窗口、不依赖桌面交互，可在无头环境用
     /// <c>PixJoin.exe --selftest</c> 验证「截图→组合→导出」主链路。
@@ -568,6 +658,7 @@ public partial class App : Application
         {
             MonitorHelper.Refresh();
             var shot = ScreenCapture.CaptureVirtualScreen();
+            lines.Add($"OK backend={ScreenCapture.ActiveBackendName}");
             int pw = shot.Bitmap.PixelWidth, ph = shot.Bitmap.PixelHeight;
             lines.Add($"OK capture {pw}x{ph}");
 
