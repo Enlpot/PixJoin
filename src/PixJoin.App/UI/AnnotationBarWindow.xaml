@@ -124,6 +124,12 @@
 
             <Border Width="1" Background="#CCCCCC" Margin="8,2"/>
 
+            <!-- 样式（线型 / 箭头形状） -->
+            <Button Content="样式 ▾" Style="{StaticResource ToolButton}" Click="OnStyleMenu"
+                    ToolTip="线型 / 箭头形状（作用于新标注与选中标注）"/>
+
+            <Border Width="1" Background="#CCCCCC" Margin="8,2"/>
+
             <!-- 撤销 / 完成 -->
             <Button Content="撤销" Style="{StaticResource ToolButton}" Click="OnUndo" ToolTip="撤销上一步 (Ctrl+Z)"/>
             <Button Content="✓ 完成" Style="{StaticResource ToolButton}" Background="#EE00A8FF" Foreground="White"

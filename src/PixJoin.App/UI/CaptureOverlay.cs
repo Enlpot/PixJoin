@@ -89,8 +89,6 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
     private Point _dragOffset;     // 鼠标点与标注锚点的偏移（物理像素）
 
     // ---- 控制点系统（角点=对角缩放、边点=单边拉伸、内角点=圆角、箭头点=端点/弯曲） ----
-    private enum HandleKind { Corner, Edge, Round, ArrowPt, Move }
-    private readonly record struct AnnotHandle(HandleKind Kind, Point Pos, int Index);
     private AnnotHandle? _activeHandle;    // 当前拖动的控制点
     private Point? _arrowLivePt;           // 箭头中点控制点拖动中的实时位置（跟手显示）
     private double _arrowDragT = 0.5;      // 箭头中点控制点在曲线上锁定的参数 t（反解保证 B(t)=鼠标，控制点恒骑线）
@@ -224,7 +222,7 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
             // 1. 有选中标注：先查控制点，再查本体拖动
             if (_selectedIndex is { } si)
             {
-                var hh = HitTestHandle(GetHandles(_annotations[si]), rel);
+                var hh = AnnotationHandles.HitTest(AnnotationHandles.Get(_annotations[si], _arrowDragT), rel);
                 if (hh is { } h)
                 {
                     _activeHandle = h;
@@ -234,7 +232,7 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
                     return;
                 }
 
-                if (HitAnnotShape(_annotations[si], rel, 5))
+                if (AnnotationHandles.HitShape(_annotations[si], rel, 5))
                 {
                     _draggingAnnot = true;
                     _dragLive = true;
@@ -300,7 +298,7 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
                 if (_lastMoveTicks != 0 && now - _lastMoveTicks > 5)
                     DbLog($"MOVE {ah.Kind}:{ah.Index} gap={now - _lastMoveTicks}ms rel=({rel.X:0},{rel.Y:0})");
                 _lastMoveTicks = now;
-                var updated = ApplyHandleDrag(_annotations[si2], ah, rel);
+                var updated = AnnotationHandles.ApplyDrag(_annotations[si2], ah, rel, _arrowDragT);
                 if (updated is not null)
                 {
                     _annotations[si2] = updated;
@@ -325,7 +323,7 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
                     if (_lastMoveTicks != 0 && now - _lastMoveTicks > 5)
                         DbLog($"MOVE-ANNOT {a.Tool} gap={now - _lastMoveTicks}ms rel=({rel.X:0},{rel.Y:0}) delta=({delta.X:0},{delta.Y:0})");
                     _lastMoveTicks = now;
-                    _annotations[si] = MoveAnnotation(a, delta);
+                    _annotations[si] = AnnotationHandles.Move(a, delta);
                     RefreshAnnotationLayer();
                     DbLog($"  after-refresh {_lastRefreshMs:0.0}ms");
                 }
@@ -384,7 +382,7 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
                     else if (nb.Top > sel.Bottom) dy = sel.Bottom - nb.Top;
                     if (Math.Abs(dx) > 0.01 || Math.Abs(dy) > 0.01)
                     {
-                        _annotations[sidx] = MoveAnnotation(_annotations[sidx], new Point(dx, dy));
+                        _annotations[sidx] = AnnotationHandles.Move(_annotations[sidx], new Point(dx, dy));
                         DbLog($"LEFTUP pullback ({dx:0},{dy:0})");
                         RefreshAnnotationLayer();
                     }
@@ -509,7 +507,7 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
     {
         if (_selectedIndex is { } si && si >= 0 && si < _annotations.Count)
         {
-            var hh = HitTestHandle(GetHandles(_annotations[si]), rel);
+            var hh = AnnotationHandles.HitTest(AnnotationHandles.Get(_annotations[si], _arrowDragT), rel);
             if (hh is { } h)
             {
                 Cursor = h.Kind switch
@@ -757,7 +755,9 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         // 8 个标注工具（带 ▾ 下拉：线型菜单；箭头=样式+线型）
         foreach (var (tool, glyph, tip) in AnnotToolDefs)
         {
-            ContextMenu? menu = tool == AnnotationTool.Arrow ? BuildArrowMenu() : BuildLineStyleMenu();
+            ContextMenu? menu = tool == AnnotationTool.Arrow
+                ? AnnotationStyleMenus.BuildArrowMenu(_annotArrowStyle, _annotDashed, OnArrowStyleApply)
+                : AnnotationStyleMenus.BuildLineStyleMenu(_annotDashed, OnLineStyleApply);
             var b = MakeToolButton(glyph, tip, menu, scale, active: _annotTool == tool);
             var t = tool;
             b.Click += (_, _) =>
@@ -910,39 +910,20 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
     }
 
     /// <summary>线型下拉菜单（实线 / 虚线）。</summary>
-    private ContextMenu BuildLineStyleMenu()
+    private void OnLineStyleApply(bool dashed)
     {
-        var menu = new ContextMenu();
-        var solid = new MenuItem { Header = "实线", IsCheckable = true, IsChecked = !_annotDashed };
-        solid.Click += (_, _) => { _annotDashed = false; ApplyDashedToSelected(); ShowToolbar(_selectionRect); };
-        var dash = new MenuItem { Header = "虚线", IsCheckable = true, IsChecked = _annotDashed };
-        dash.Click += (_, _) => { _annotDashed = true; ApplyDashedToSelected(); ShowToolbar(_selectionRect); };
-        menu.Items.Add(solid);
-        menu.Items.Add(dash);
-        return menu;
+        _annotDashed = dashed;
+        ApplyDashedToSelected();
+        ShowToolbar(_selectionRect);
     }
 
-    /// <summary>箭头下拉菜单：样式 3 种 + 线型 2 种。</summary>
-    private ContextMenu BuildArrowMenu()
+    private void OnArrowStyleApply(ArrowStyle style, bool dashed)
     {
-        var menu = new ContextMenu();
-        var solid = new MenuItem { Header = "实心箭头", IsCheckable = true, IsChecked = _annotArrowStyle == ArrowStyle.Solid };
-        solid.Click += (_, _) => { _annotArrowStyle = ArrowStyle.Solid; ApplyArrowStyleToSelected(); ShowToolbar(_selectionRect); };
-        var line = new MenuItem { Header = "V 形箭头", IsCheckable = true, IsChecked = _annotArrowStyle == ArrowStyle.Line };
-        line.Click += (_, _) => { _annotArrowStyle = ArrowStyle.Line; ApplyArrowStyleToSelected(); ShowToolbar(_selectionRect); };
-        var dbl = new MenuItem { Header = "双头箭头", IsCheckable = true, IsChecked = _annotArrowStyle == ArrowStyle.Double };
-        dbl.Click += (_, _) => { _annotArrowStyle = ArrowStyle.Double; ApplyArrowStyleToSelected(); ShowToolbar(_selectionRect); };
-        menu.Items.Add(solid);
-        menu.Items.Add(line);
-        menu.Items.Add(dbl);
-        menu.Items.Add(new Separator());
-        var ls = new MenuItem { Header = "实线", IsCheckable = true, IsChecked = !_annotDashed };
-        ls.Click += (_, _) => { _annotDashed = false; ApplyDashedToSelected(); ShowToolbar(_selectionRect); };
-        var ld = new MenuItem { Header = "虚线", IsCheckable = true, IsChecked = _annotDashed };
-        ld.Click += (_, _) => { _annotDashed = true; ApplyDashedToSelected(); ShowToolbar(_selectionRect); };
-        menu.Items.Add(ls);
-        menu.Items.Add(ld);
-        return menu;
+        _annotArrowStyle = style;
+        _annotDashed = dashed;
+        ApplyArrowStyleToSelected();
+        ApplyDashedToSelected();
+        ShowToolbar(_selectionRect);
     }
 
     private void ApplyArrowStyleToSelected()
@@ -1148,146 +1129,17 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
             Dashed = a.Dashed, Arrow = a.Arrow, CornerRadius = corner ?? a.CornerRadius,
         };
 
-    private Rect GetAnnotBounds(Annotation a)
-    {
-        switch (a.Tool)
-        {
-            case AnnotationTool.Rect:
-            case AnnotationTool.Ellipse:
-            case AnnotationTool.Highlight:
-            case AnnotationTool.Mosaic:
-                return new Rect(a.X, a.Y, a.W, a.H);
-            case AnnotationTool.Arrow:
-                if (a.Points is { Length: >= 6 })
-                {
-                    double minX = Math.Min(a.Points[0], Math.Min(a.Points[2], a.Points[4]));
-                    double minY = Math.Min(a.Points[1], Math.Min(a.Points[3], a.Points[5]));
-                    double maxX = Math.Max(a.Points[0], Math.Max(a.Points[2], a.Points[4]));
-                    double maxY = Math.Max(a.Points[1], Math.Max(a.Points[3], a.Points[5]));
-                    return new Rect(minX, minY, maxX - minX, maxY - minY);
-                }
-                return new Rect(a.X, a.Y, 0, 0);
-            case AnnotationTool.Pen:
-                if (a.Points is { Length: >= 4 })
-                {
-                    double minX = a.Points[0], minY = a.Points[1], maxX = a.Points[0], maxY = a.Points[1];
-                    for (int i = 2; i + 1 < a.Points.Length; i += 2)
-                    {
-                        minX = Math.Min(minX, a.Points[i]);
-                        minY = Math.Min(minY, a.Points[i + 1]);
-                        maxX = Math.Max(maxX, a.Points[i]);
-                        maxY = Math.Max(maxY, a.Points[i + 1]);
-                    }
-                    return new Rect(minX, minY, maxX - minX, maxY - minY);
-                }
-                return new Rect(a.X, a.Y, 0, 0);
-            case AnnotationTool.Text:
-            case AnnotationTool.Number:
-                double sz = Math.Max(24, a.Thickness * 4);
-                return new Rect(a.X - sz / 2, a.Y - sz / 2, sz * 2, sz);
-            default:
-                return new Rect(a.X, a.Y, a.W, a.H);
-        }
-    }
+    private Rect GetAnnotBounds(Annotation a) => AnnotationHandles.Bounds(a);
 
     /// <summary>点到线段的最短距离（物理像素）。</summary>
-    private static double PointSegDist(double px, double py, double ax, double ay, double bx, double by)
-    {
-        double dx = bx - ax, dy = by - ay;
-        double l2 = dx * dx + dy * dy;
-        double t = l2 > 1e-9 ? Math.Clamp(((px - ax) * dx + (py - ay) * dy) / l2, 0, 1) : 0;
-        double qx = ax + t * dx, qy = ay + t * dy;
-        return Math.Sqrt((px - qx) * (px - qx) + (py - qy) * (py - qy));
-    }
-
-    /// <summary>
-    /// 精确命中：闭合形状用包围盒；箭头=到可见曲线/箭头头部的距离（不再用含弯曲控制点的巨大包围盒）；
-    /// 画笔=到折线距离。这样箭头/画笔包围盒内的空白区域不会误命中，可以正常画其他图形。
-    /// </summary>
-    private bool HitAnnotShape(Annotation a, Point rel, double tol)
-    {
-        switch (a.Tool)
-        {
-            case AnnotationTool.Arrow:
-                if (a.Points is { Length: >= 6 })
-                {
-                    double hit = Math.Max(tol, Math.Max(6, a.Thickness * 1.5));
-                    double x0 = a.Points[0], y0 = a.Points[1], cx = a.Points[2], cy = a.Points[3], x2 = a.Points[4], y2 = a.Points[5];
-                    double hsh = Math.Max(8, Math.Max(1, a.Thickness) * 4);
-                    double dxh = x2 - cx, dyh = y2 - cy, dlh = Math.Sqrt(dxh * dxh + dyh * dyh);
-                    double hrx = dlh > 1e-6 ? x2 - dxh / dlh * hsh : x2;
-                    double hry = dlh > 1e-6 ? y2 - dyh / dlh * hsh : y2;
-                    double px = x0, py = y0;
-                    for (int i = 1; i <= 64; i++)
-                    {
-                        double t = i / 64.0, u = 1 - t;
-                        double qx = u * u * x0 + 2 * t * u * cx + t * t * hrx;
-                        double qy = u * u * y0 + 2 * t * u * cy + t * t * hry;
-                        if (PointSegDist(rel.X, rel.Y, px, py, qx, qy) <= hit) return true;
-                        px = qx; py = qy;
-                    }
-                    // 箭头头部（实心三角）：尖点 hsh 范围内可命中
-                    return Math.Sqrt((rel.X - x2) * (rel.X - x2) + (rel.Y - y2) * (rel.Y - y2)) <= hsh + hit;
-                }
-                return false;
-            case AnnotationTool.Pen:
-                if (a.Points is { Length: >= 4 })
-                {
-                    double hit = Math.Max(tol, Math.Max(6, a.Thickness * 1.5));
-                    for (int i = 2; i + 1 < a.Points.Length; i += 2)
-                        if (PointSegDist(rel.X, rel.Y, a.Points[i - 2], a.Points[i - 1], a.Points[i], a.Points[i + 1]) <= hit) return true;
-                    return false;
-                }
-                return false;
-            default:
-                var b = GetAnnotBounds(a);
-                b.Inflate(tol, tol);
-                return b.Contains(rel);
-        }
-    }
-
     private int? HitTestAnnotation(Point relPhysical)
     {
         const double tol = 5;
         for (int i = _annotations.Count - 1; i >= 0; i--)
         {
-            if (HitAnnotShape(_annotations[i], relPhysical, tol)) return i;
+            if (AnnotationHandles.HitShape(_annotations[i], relPhysical, tol)) return i;
         }
         return null;
-    }
-
-    private static Annotation MoveAnnotation(Annotation a, Point delta)
-    {
-        switch (a.Tool)
-        {
-            case AnnotationTool.Arrow:
-                if (a.Points is { Length: >= 6 })
-                {
-                    // 必须同步更新 X/Y：移动公式 delta=rel-_dragOffset-a.X 依赖 X 每帧更新（帧增量），
-                    // 否则 X 恒为初始值 → delta 永远是总位移，每帧叠加到 Points → 移动量随帧数爆炸
-                    return MakeAnnot(a, x: a.X + delta.X, y: a.Y + delta.Y, points: new[]
-                    {
-                        a.Points[0] + delta.X, a.Points[1] + delta.Y,
-                        a.Points[2] + delta.X, a.Points[3] + delta.Y,
-                        a.Points[4] + delta.X, a.Points[5] + delta.Y,
-                    });
-                }
-                return MakeAnnot(a, x: a.X + delta.X, y: a.Y + delta.Y);
-            case AnnotationTool.Pen:
-                if (a.Points is { Length: >= 2 })
-                {
-                    var pts = new double[a.Points.Length];
-                    for (int i = 0; i < a.Points.Length; i += 2)
-                    {
-                        pts[i] = a.Points[i] + delta.X;
-                        pts[i + 1] = a.Points[i + 1] + delta.Y;
-                    }
-                    return MakeAnnot(a, x: a.X + delta.X, y: a.Y + delta.Y, points: pts);
-                }
-                return MakeAnnot(a, x: a.X + delta.X, y: a.Y + delta.Y);
-            default:
-                return MakeAnnot(a, x: a.X + delta.X, y: a.Y + delta.Y);
-        }
     }
 
     private static Annotation WithColorThickness(Annotation a, Color? color = null, double? thickness = null)
@@ -1331,92 +1183,6 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         return best;
     }
 
-    private List<AnnotHandle> GetHandles(Annotation a)
-    {
-        var list = new List<AnnotHandle>();
-        switch (a.Tool)
-        {
-            case AnnotationTool.Rect:
-            case AnnotationTool.Highlight:
-            case AnnotationTool.Mosaic:
-            {
-                double x = a.X, y = a.Y, w = a.W, h = a.H;
-                list.Add(new AnnotHandle(HandleKind.Corner, new Point(x, y), 0));
-                list.Add(new AnnotHandle(HandleKind.Corner, new Point(x + w, y), 1));
-                list.Add(new AnnotHandle(HandleKind.Corner, new Point(x, y + h), 2));
-                list.Add(new AnnotHandle(HandleKind.Corner, new Point(x + w, y + h), 3));
-                list.Add(new AnnotHandle(HandleKind.Edge, new Point(x + w / 2, y), 0));
-                list.Add(new AnnotHandle(HandleKind.Edge, new Point(x + w, y + h / 2), 1));
-                list.Add(new AnnotHandle(HandleKind.Edge, new Point(x + w / 2, y + h), 2));
-                list.Add(new AnnotHandle(HandleKind.Edge, new Point(x, y + h / 2), 3));
-                double rd = Math.Min(Math.Max(8, a.CornerRadius * 0.5 + 6), Math.Min(w, h) * 0.4);
-                list.Add(new AnnotHandle(HandleKind.Round, new Point(x + rd, y + rd), 0));
-                list.Add(new AnnotHandle(HandleKind.Round, new Point(x + w - rd, y + rd), 1));
-                list.Add(new AnnotHandle(HandleKind.Round, new Point(x + rd, y + h - rd), 2));
-                list.Add(new AnnotHandle(HandleKind.Round, new Point(x + w - rd, y + h - rd), 3));
-                break;
-            }
-            case AnnotationTool.Ellipse:
-            {
-                double x = a.X, y = a.Y, w = a.W, h = a.H;
-                list.Add(new AnnotHandle(HandleKind.Corner, new Point(x, y), 0));
-                list.Add(new AnnotHandle(HandleKind.Corner, new Point(x + w, y), 1));
-                list.Add(new AnnotHandle(HandleKind.Corner, new Point(x, y + h), 2));
-                list.Add(new AnnotHandle(HandleKind.Corner, new Point(x + w, y + h), 3));
-                list.Add(new AnnotHandle(HandleKind.Edge, new Point(x + w / 2, y), 0));
-                list.Add(new AnnotHandle(HandleKind.Edge, new Point(x + w, y + h / 2), 1));
-                list.Add(new AnnotHandle(HandleKind.Edge, new Point(x + w / 2, y + h), 2));
-                list.Add(new AnnotHandle(HandleKind.Edge, new Point(x, y + h / 2), 3));
-                break;
-            }
-            case AnnotationTool.Arrow:
-                if (a.Points is { Length: >= 6 })
-                {
-                    // 可见曲线终点 = 头部根部（大头部会截断杆的末端，若不折算，顶点会落在被头部遮住的曲线段上）
-                    double hsh = Math.Max(8, Math.Max(1, a.Thickness) * 4);
-                    double dxh = a.Points[4] - a.Points[2], dyh = a.Points[5] - a.Points[3];
-                    double dlh = Math.Sqrt(dxh * dxh + dyh * dyh);
-                    double hrxx = dlh > 1e-6 ? a.Points[4] - dxh / dlh * hsh : a.Points[4];
-                    double hryy = dlh > 1e-6 ? a.Points[5] - dyh / dlh * hsh : a.Points[5];
-                    // 中点控制点 = 曲线上锁定参数 _arrowDragT 处的点（初始 0.5=视觉中心；拖动中反解保证 B(t)=鼠标）
-                    double ax = _arrowDragT;
-                    double bx = ArrowApexX(ax, a.Points[0], a.Points[2], hrxx);
-                    double by = ArrowApexY(ax, a.Points[1], a.Points[3], hryy);
-                    list.Add(new AnnotHandle(HandleKind.ArrowPt, new Point(a.Points[0], a.Points[1]), 0));
-                    list.Add(new AnnotHandle(HandleKind.ArrowPt, new Point(bx, by), 1));
-                    list.Add(new AnnotHandle(HandleKind.ArrowPt, new Point(a.Points[4], a.Points[5]), 2));
-                }
-                break;
-            case AnnotationTool.Text:
-            case AnnotationTool.Number:
-            {
-                var b = GetAnnotBounds(a);
-                list.Add(new AnnotHandle(HandleKind.Move, new Point(b.X, b.Y), 0));
-                list.Add(new AnnotHandle(HandleKind.Corner, new Point(b.X, b.Y), 0));
-                list.Add(new AnnotHandle(HandleKind.Corner, new Point(b.X + b.Width, b.Y), 1));
-                list.Add(new AnnotHandle(HandleKind.Corner, new Point(b.X, b.Y + b.Height), 2));
-                list.Add(new AnnotHandle(HandleKind.Corner, new Point(b.X + b.Width, b.Y + b.Height), 3));
-                break;
-            }
-            case AnnotationTool.Pen:
-                list.Add(new AnnotHandle(HandleKind.Move, GetAnnotBounds(a).TopLeft, 0));
-                break;
-        }
-        return list;
-    }
-
-    /// <summary>曲线“顶点”参数：B'(t) ∥ 弦 P0P2（叉积=0，即曲线上离弦最远的点）。退化取 0.5。</summary>
-    private static double ArrowApexT(double x0, double y0, double cx, double cy, double x2, double y2)
-    {
-        double sx = x2 - x0, sy = y2 - y0;
-        double ax = cx - x0, ay = cy - y0;
-        double dx = x2 - 2 * cx + x0, dy = y2 - 2 * cy + y0;
-        double cA = ax * sy - ay * sx;
-        double cD = dx * sy - dy * sx;
-        if (Math.Abs(cD) < 1e-9) return 0.5;
-        return Math.Clamp(-cA / cD, 0.1, 0.9);
-    }
-
     private static double ArrowApexX(double t, double x0, double cx, double x2)
     {
         double u = 1 - t;
@@ -1429,140 +1195,6 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         return u * u * y0 + 2 * t * u * cy + t * t * y2;
     }
 
-    private static AnnotHandle? HitTestHandle(List<AnnotHandle> handles, Point rel, double tol = 8)
-    {
-        AnnotHandle? best = null;
-        double bestD = tol;
-        foreach (var h in handles)
-        {
-            // 弧顶控制点在曲线正中部：按箭头中部应拖动整体，只有精确按中小方块才变形 → 命中区 4px
-            double htol = (h.Kind == HandleKind.ArrowPt && h.Index == 1) ? 4 : tol;
-            double dx = h.Pos.X - rel.X, dy = h.Pos.Y - rel.Y;
-            double d = Math.Sqrt(dx * dx + dy * dy);
-            if (d <= htol && d <= bestD) { bestD = d; best = h; }
-        }
-        return best;
-    }
-
-    private Annotation? ApplyHandleDrag(Annotation a, AnnotHandle h, Point rel)
-    {
-        switch (h.Kind)
-        {
-            case HandleKind.Corner:
-            {
-                // 文字 / 序号：角点缩放 = 以中心为基准按包围盒比例调整字号（粗细）
-                if (a.Tool is AnnotationTool.Text or AnnotationTool.Number)
-                {
-                    var bb = GetAnnotBounds(a);
-                    double bxc = bb.Left + bb.Width / 2, byc = bb.Top + bb.Height / 2;
-                    double nw = Math.Max(4, Math.Abs(rel.X - bxc) * 2);
-                    double nh = Math.Max(4, Math.Abs(rel.Y - byc) * 2);
-                    double s = Math.Max(nw / Math.Max(1, bb.Width), nh / Math.Max(1, bb.Height));
-                    return MakeAnnot(a, thickness: Math.Clamp(a.Thickness * s, 2, 40));
-                }
-
-                // 锚定对角的标准拉伸：拖 A 角 → 对角固定，A 移动，邻角跟随（防止翻转，最小尺寸 6）
-                double x = a.X, y = a.Y, w = a.W, hh = a.H;
-                double right = x + w, bottom = y + hh;
-                switch (h.Index)
-                {
-                    case 0: // 左上，锚右下
-                        x = Math.Min(rel.X, right - 6); y = Math.Min(rel.Y, bottom - 6);
-                        w = right - x; hh = bottom - y;
-                        break;
-                    case 1: // 右上，锚左下
-                        y = Math.Min(rel.Y, bottom - 6);
-                        w = Math.Max(rel.X - x, 6); hh = bottom - y;
-                        break;
-                    case 2: // 左下，锚右上
-                        x = Math.Min(rel.X, right - 6);
-                        w = right - x; hh = Math.Max(rel.Y - y, 6);
-                        break;
-                    default: // 右下，锚左上
-                        w = Math.Max(rel.X - x, 6); hh = Math.Max(rel.Y - y, 6);
-                        break;
-                }
-                return MakeAnnot(a, x: x, y: y, w: w, h: hh);
-            }
-            case HandleKind.Edge:
-            {
-                // 锚定对边：拖上边 → 下边固定只动上边；拖右边 → 左边固定只动右边（防止翻转，最小尺寸 6）
-                double x = a.X, y = a.Y, w = a.W, hh = a.H;
-                double right = x + w, bottom = y + hh;
-                switch (h.Index)
-                {
-                    case 0: y = Math.Min(rel.Y, bottom - 6); hh = bottom - y; break;        // 上边，锚下边
-                    case 1: w = Math.Max(rel.X - x, 6); break;                              // 右边，锚左边
-                    case 2: hh = Math.Max(rel.Y - y, 6); break;                             // 下边，锚上边
-                    default: x = Math.Min(rel.X, right - 6); w = right - x; break;          // 左边，锚右边
-                }
-                return MakeAnnot(a, x: x, y: y, w: w, h: hh);
-            }
-            case HandleKind.Round:
-            {
-                double w = a.W, hh = a.H;
-                double maxR = Math.Min(w, hh) / 2;
-                double cx, cy;
-                switch (h.Index)
-                {
-                    case 0: cx = a.X; cy = a.Y; break;
-                    case 1: cx = a.X + w; cy = a.Y; break;
-                    case 2: cx = a.X; cy = a.Y + hh; break;
-                    default: cx = a.X + w; cy = a.Y + hh; break;
-                }
-                double dcx = (a.X + w / 2) - cx, dcy = (a.Y + hh / 2) - cy;
-                double dl = Math.Sqrt(dcx * dcx + dcy * dcy) + 1e-9;
-                double t = ((rel.X - cx) * dcx + (rel.Y - cy) * dcy) / dl;
-                return MakeAnnot(a, corner: Math.Clamp(t * 0.8, 0, maxR));
-            }
-            case HandleKind.ArrowPt:
-                if (a.Points is not { Length: >= 6 }) return null;
-                {
-                    var pts = (double[])a.Points.Clone();
-                    if (h.Index == 1)
-                    {
-                        // 拖动中点 → 用锁定参数 t 反解控制点 C = (Q - (1-t)²P0 - t²P2) / (2t(1-t))，保证 B(t)=鼠标
-                        double hsh = Math.Max(8, Math.Max(1, a.Thickness) * 4);
-                        double dxh = a.Points[4] - a.Points[2], dyh = a.Points[5] - a.Points[3];
-                        double dlh = Math.Sqrt(dxh * dxh + dyh * dyh);
-                        double hrxx = dlh > 1e-6 ? a.Points[4] - dxh / dlh * hsh : a.Points[4];
-                        double hryy = dlh > 1e-6 ? a.Points[5] - dyh / dlh * hsh : a.Points[5];
-                        double t = _arrowDragT;
-                        double k = 2 * t * (1 - t);
-                        if (Math.Abs(k) < 1e-6) { pts[2] = 2 * rel.X - (pts[0] + pts[4]) / 2; pts[3] = 2 * rel.Y - (pts[1] + pts[5]) / 2; }
-                        else
-                        {
-                            double u = 1 - t;
-                            // 两步反解：先用尖点 P2 粗解出 C → 由其头部根部 hrx 精化一次 → B(t)=鼠标（<1px）
-                            double cx1 = (rel.X - u * u * pts[0] - t * t * pts[4]) / k;
-                            double cy1 = (rel.Y - u * u * pts[1] - t * t * pts[5]) / k;
-                            double dxh2 = pts[4] - cx1, dyh2 = pts[5] - cy1;
-                            double dlh2 = Math.Sqrt(dxh2 * dxh2 + dyh2 * dyh2);
-                            double hrx2 = dlh2 > 1e-6 ? pts[4] - dxh2 / dlh2 * hsh : pts[4];
-                            double hry2 = dlh2 > 1e-6 ? pts[5] - dyh2 / dlh2 * hsh : pts[5];
-                            pts[2] = (rel.X - u * u * pts[0] - t * t * hrx2) / k;
-                            pts[3] = (rel.Y - u * u * pts[1] - t * t * hry2) / k;
-                        }
-                    }
-                    else
-                    {
-                        pts[h.Index * 2] = rel.X;
-                        pts[h.Index * 2 + 1] = rel.Y;
-                    }
-                    return MakeAnnot(a, points: pts);
-                }
-            case HandleKind.Move:
-            {
-                var delta = new Point(rel.X - h.Pos.X, rel.Y - h.Pos.Y);
-                return MoveAnnotation(a, delta);
-            }
-        }
-        return null;
-    }
-
-    // ================= 预览层渲染 =================
-
-    /// <summary>重建标注预览层：已固化标注（各自颜色/粗细）+ 进行中绘制 + 选中框 + 控制点。</summary>
     private void RefreshAnnotationLayer()
     {
         System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
@@ -1581,142 +1213,71 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         // 已固化标注：每个标注用自身颜色/粗细（选中后改一个不影响其他）
         foreach (var a in _annotations)
         {
-            var brush = new SolidColorBrush(a.Color);
-            brush.Freeze();
-            DrawAnnotationPreview(a, dip, brush, a.Thickness * dip);
+            AnnotationPainter.Draw(_annotLayer, a, dip, dip);
         }
 
         // 进行中绘制（用当前工具颜色/粗细）
         if (_annotDrawing && _annotTool is { } tool)
         {
-            var brush = new SolidColorBrush(_annotColor);
-            brush.Freeze();
-            double stroke = _annotThickness * dip;
+            Annotation? tmp = null;
             switch (tool)
             {
                 case AnnotationTool.Rect:
                 case AnnotationTool.Mosaic:
-                {
-                    double x0 = Math.Min(_annotStart.X, _annotLast.X), y0 = Math.Min(_annotStart.Y, _annotLast.Y);
-                    double w0 = Math.Abs(_annotLast.X - _annotStart.X), h0 = Math.Abs(_annotLast.Y - _annotStart.Y);
-                    double th = stroke / dip;
-                    var r = new Rectangle { Width = Math.Max(1, (w0 + th) * dip), Height = Math.Max(1, (h0 + th) * dip), Stroke = brush, StrokeThickness = stroke };
-                    if (_annotDashed) r.StrokeDashArray = new DoubleCollection { 4, 3 };
-                    if (tool == AnnotationTool.Mosaic) r.Fill = new SolidColorBrush(Color.FromArgb(0x33, 0, 0, 0));
-                    Canvas.SetLeft(r, (x0 - th / 2) * dip); Canvas.SetTop(r, (y0 - th / 2) * dip);
-                    _annotLayer.Children.Add(r);
-                    break;
-                }
                 case AnnotationTool.Ellipse:
-                {
-                    double x0 = Math.Min(_annotStart.X, _annotLast.X), y0 = Math.Min(_annotStart.Y, _annotLast.Y);
-                    double w0 = Math.Abs(_annotLast.X - _annotStart.X), h0 = Math.Abs(_annotLast.Y - _annotStart.Y);
-                    double th = stroke / dip;
-                    var el = new Ellipse { Width = Math.Max(1, (w0 + th) * dip), Height = Math.Max(1, (h0 + th) * dip), Stroke = brush, StrokeThickness = stroke };
-                    if (_annotDashed) el.StrokeDashArray = new DoubleCollection { 4, 3 };
-                    Canvas.SetLeft(el, (x0 - th / 2) * dip); Canvas.SetTop(el, (y0 - th / 2) * dip);
-                    _annotLayer.Children.Add(el);
-                    break;
-                }
                 case AnnotationTool.Highlight:
-                {
-                    double x = Math.Min(_annotStart.X, _annotLast.X) * dip;
-                    double y = Math.Min(_annotStart.Y, _annotLast.Y) * dip;
-                    double w = Math.Abs(_annotLast.X - _annotStart.X) * dip;
-                    double h = Math.Abs(_annotLast.Y - _annotStart.Y) * dip;
-                    var r = new Rectangle { Width = w, Height = h, Fill = new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xE2, 0x3C)) };
-                    Canvas.SetLeft(r, x); Canvas.SetTop(r, y);
-                    _annotLayer.Children.Add(r);
+                    tmp = new Annotation
+                    {
+                        Tool = tool, Color = _annotColor, Thickness = _annotThickness, Dashed = _annotDashed, Arrow = _annotArrowStyle,
+                        X = Math.Min(_annotStart.X, _annotLast.X), Y = Math.Min(_annotStart.Y, _annotLast.Y),
+                        W = Math.Abs(_annotLast.X - _annotStart.X), H = Math.Abs(_annotLast.Y - _annotStart.Y),
+                    };
                     break;
-                }
                 case AnnotationTool.Arrow:
-                    AddArrowPreview(_annotStart.X * dip, _annotStart.Y * dip,
-                        (_annotStart.X + _annotLast.X) / 2 * dip, (_annotStart.Y + _annotLast.Y) / 2 * dip,
-                        _annotLast.X * dip, _annotLast.Y * dip, brush, stroke, _annotDashed, _annotArrowStyle);
+                    tmp = new Annotation
+                    {
+                        Tool = tool, Color = _annotColor, Thickness = _annotThickness, Dashed = _annotDashed, Arrow = _annotArrowStyle,
+                        Points = new[]
+                        {
+                            _annotStart.X, _annotStart.Y,
+                            (_annotStart.X + _annotLast.X) / 2, (_annotStart.Y + _annotLast.Y) / 2,
+                            _annotLast.X, _annotLast.Y,
+                        },
+                    };
                     break;
                 case AnnotationTool.Pen:
                     if (_annotPenPts.Count >= 2)
                     {
-                        var poly = new Polyline { Stroke = brush, StrokeThickness = stroke };
-                        if (_annotDashed) poly.StrokeDashArray = new DoubleCollection { 4, 3 };
-                        foreach (var pt in _annotPenPts) poly.Points.Add(new Point(pt.X * dip, pt.Y * dip));
-                        _annotLayer.Children.Add(poly);
+                        var pts = new double[_annotPenPts.Count * 2];
+                        for (int i = 0; i < _annotPenPts.Count; i++) { pts[i * 2] = _annotPenPts[i].X; pts[i * 2 + 1] = _annotPenPts[i].Y; }
+                        tmp = new Annotation { Tool = tool, Color = _annotColor, Thickness = _annotThickness, Dashed = _annotDashed, Arrow = _annotArrowStyle, Points = pts };
                     }
                     break;
             }
+            if (tmp is not null) AnnotationPainter.Draw(_annotLayer, tmp, dip, dip);
         }
 
         // 选中框 + 控制点（拖动中隐藏：只画标注本体，保证跟手；松手后恢复）
         if (!_dragLive && _selectedIndex is { } sel && sel >= 0 && sel < _annotations.Count)
         {
-            var b = GetAnnotBounds(_annotations[sel]);
-            // 箭头 / 椭圆 / 矩形 / 画笔：只显示控制点，不画矩形外框
-            bool noFrame = _annotations[sel].Tool is AnnotationTool.Arrow or AnnotationTool.Ellipse or AnnotationTool.Rect or AnnotationTool.Pen;
-            if (!noFrame)
-            {
-                var selRect = new Rectangle
-                {
-                    Width = Math.Max(1, b.Width * dip),
-                    Height = Math.Max(1, b.Height * dip),
-                    Stroke = new SolidColorBrush(Color.FromRgb(0x3B, 0x82, 0xF6)),
-                    StrokeThickness = 2.5,
-                    StrokeDashArray = new DoubleCollection { 5, 3 },
-                    Fill = Brushes.Transparent,
-                };
-                Canvas.SetLeft(selRect, b.X * dip);
-                Canvas.SetTop(selRect, b.Y * dip);
-                _annotLayer.Children.Add(selRect);
-            }
+            AnnotationPainter.DrawHandles(_annotLayer, _annotations[sel], dip, dip, _arrowDragT);
 
-            // 控制点：角/边/箭头=白方块，圆角=白圆点
-            foreach (var h in GetHandles(_annotations[sel]))
+            // [DEBUG] 控制点坐标标注（箭头附"距可见曲线距离"，d≈0 即精确骑线）
+            foreach (var h in AnnotationHandles.Get(_annotations[sel], _arrowDragT))
             {
                 var pos = h.Pos;
-                if (_arrowLivePt is { } lp && h.Kind == HandleKind.ArrowPt && h.Index == 1)
-                    pos = lp;   // 拖动中箭头中点控制点跟手显示
-                if (h.Kind == HandleKind.Round)
+                string dbgTxt = $"({pos.X:0},{pos.Y:0})";
+                if (h.Kind == HandleKind.ArrowPt && _annotations[sel].Tool == AnnotationTool.Arrow)
+                    dbgTxt += $" d{ArrowHandleCurveDist(_annotations[sel], h):0.#}";
+                var dbg = new System.Windows.Controls.TextBlock
                 {
-                    var dot = new Ellipse
-                    {
-                        Width = 9, Height = 9,
-                        Fill = Brushes.White,
-                        Stroke = new SolidColorBrush(Color.FromRgb(0x00, 0xE5, 0xC0)),
-                        StrokeThickness = 1.5,
-                    };
-                    Canvas.SetLeft(dot, pos.X * dip - 4.5);
-                    Canvas.SetTop(dot, pos.Y * dip - 4.5);
-                    _annotLayer.Children.Add(dot);
-                }
-                else
-                {
-                    var hb = new Rectangle
-                    {
-                        Width = 7, Height = 7,
-                        Fill = Brushes.White,
-                        Stroke = new SolidColorBrush(Color.FromRgb(0x00, 0xE5, 0xC0)),
-                        StrokeThickness = 1.5,
-                    };
-                    Canvas.SetLeft(hb, pos.X * dip - 3.5);
-                    Canvas.SetTop(hb, pos.Y * dip - 3.5);
-                    _annotLayer.Children.Add(hb);
-                    // [DEBUG] 控制点坐标标注（箭头附"距可见曲线距离"，d≈0 即精确骑线）；拖动中隐藏保证跟手
-                    string dbgTxt = "";
-                    if (!_dragLive)
-                    {
-                        dbgTxt = $"({pos.X:0},{pos.Y:0})";
-                        if (h.Kind == HandleKind.ArrowPt && _annotations[sel].Tool == AnnotationTool.Arrow)
-                            dbgTxt += $" d{ArrowHandleCurveDist(_annotations[sel], h):0.#}";
-                    }
-                    var dbg = new System.Windows.Controls.TextBlock
-                    {
-                        Text = dbgTxt,
-                        FontSize = 10,
-                        Foreground = new SolidColorBrush(Color.FromRgb(0x00, 0xE5, 0xC0)),
-                    };
-                    Canvas.SetLeft(dbg, pos.X * dip + 5);
-                    Canvas.SetTop(dbg, pos.Y * dip - 12);
-                    _annotLayer.Children.Add(dbg);
-                }
+                    Text = dbgTxt,
+                    FontSize = 10,
+                    Foreground = new SolidColorBrush(Color.FromRgb(0x00, 0xE5, 0xC0)),
+                };
+                Canvas.SetLeft(dbg, pos.X * dip + 5);
+                Canvas.SetTop(dbg, pos.Y * dip - 12);
+                _annotLayer.Children.Add(dbg);
             }
         }
 
@@ -1724,112 +1285,6 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         _lastRefreshMs = sw.Elapsed.TotalMilliseconds;
     }
 
-    /// <summary>已固化标注的预览绘制（每个标注用自身颜色/粗细）。坐标为 DIP。</summary>
-    private void DrawAnnotationPreview(Annotation a, double dip, Brush brush, double stroke)
-    {
-        switch (a.Tool)
-        {
-            case AnnotationTool.Rect:
-            case AnnotationTool.Mosaic:
-            {
-                if (a.CornerRadius > 0.5)
-                {
-                    // WPF 闭合形状控件为外描边（描边中心=几何+t/2）；外扩 t/2 使描边中心=几何边界（=控制点=最终渲染）
-                    double th = stroke / dip;
-                    var geo = RoundRectGeometryDip((a.X - th / 2) * dip, (a.Y - th / 2) * dip, (a.W + th) * dip, (a.H + th) * dip, (a.CornerRadius + th / 2) * dip);
-                    var p = new Path { Data = geo, Stroke = brush, StrokeThickness = stroke };
-                    if (a.Dashed) p.StrokeDashArray = new DoubleCollection { 4, 3 };
-                    if (a.Tool == AnnotationTool.Mosaic) p.Fill = new SolidColorBrush(Color.FromArgb(0x33, 0, 0, 0));
-                    _annotLayer.Children.Add(p);
-                }
-                else
-                {
-                    double th = stroke / dip;
-                    var r = new Rectangle
-                    {
-                        Width = Math.Max(1, (a.W + th) * dip), Height = Math.Max(1, (a.H + th) * dip),
-                        Stroke = brush, StrokeThickness = stroke,
-                        Fill = a.Tool == AnnotationTool.Mosaic
-                            ? new SolidColorBrush(Color.FromArgb(0x33, 0, 0, 0))
-                            : null,
-                    };
-                    if (a.Dashed) r.StrokeDashArray = new DoubleCollection { 4, 3 };
-                    Canvas.SetLeft(r, (a.X - th / 2) * dip); Canvas.SetTop(r, (a.Y - th / 2) * dip);
-                    _annotLayer.Children.Add(r);
-                }
-                break;
-            }
-            case AnnotationTool.Ellipse:
-            {
-                double thc = stroke / dip;
-                var el = new Ellipse { Width = Math.Max(1, (a.W + thc) * dip), Height = Math.Max(1, (a.H + thc) * dip), Stroke = brush, StrokeThickness = stroke };
-                if (a.Dashed) el.StrokeDashArray = new DoubleCollection { 4, 3 };
-                Canvas.SetLeft(el, (a.X - thc / 2) * dip); Canvas.SetTop(el, (a.Y - thc / 2) * dip);
-                _annotLayer.Children.Add(el);
-                break;
-            }
-            case AnnotationTool.Highlight:
-            {
-                var r = new Rectangle { Width = a.W * dip, Height = a.H * dip, Fill = new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xE2, 0x3C)) };
-                Canvas.SetLeft(r, a.X * dip); Canvas.SetTop(r, a.Y * dip);
-                _annotLayer.Children.Add(r);
-                break;
-            }
-            case AnnotationTool.Arrow:
-                if (a.Points is { Length: >= 6 })
-                    AddArrowPreview(a.Points[0] * dip, a.Points[1] * dip, a.Points[2] * dip, a.Points[3] * dip,
-                        a.Points[4] * dip, a.Points[5] * dip, brush, stroke, a.Dashed, a.Arrow);
-                break;
-            case AnnotationTool.Pen:
-                if (a.Points is { Length: >= 4 })
-                {
-                    var poly = new Polyline { Stroke = brush, StrokeThickness = stroke };
-                    if (a.Dashed) poly.StrokeDashArray = new DoubleCollection { 4, 3 };
-                    for (int i = 0; i + 1 < a.Points.Length; i += 2)
-                        poly.Points.Add(new Point(a.Points[i] * dip, a.Points[i + 1] * dip));
-                    _annotLayer.Children.Add(poly);
-                }
-                break;
-            case AnnotationTool.Text:
-            {
-                var tb = new TextBlock
-                {
-                    Text = a.Text ?? "",
-                    Foreground = brush,
-                    FontSize = Math.Max(14, a.Thickness * 4) * dip,
-                    FontFamily = new FontFamily("Microsoft YaHei UI"),
-                };
-                Canvas.SetLeft(tb, a.X * dip); Canvas.SetTop(tb, a.Y * dip);
-                _annotLayer.Children.Add(tb);
-                break;
-            }
-            case AnnotationTool.Number:
-            {
-                var tb = new TextBlock
-                {
-                    Text = a.Number.ToString(),
-                    Foreground = Brushes.White,
-                    FontSize = Math.Max(14, a.Thickness * 3) * dip,
-                    FontWeight = FontWeights.Bold,
-                    FontFamily = new FontFamily("Microsoft YaHei UI"),
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                };
-                double sz = Math.Max(20, a.Thickness * 4) * dip;
-                var bg = new Border
-                {
-                    Width = sz, Height = sz,
-                    Background = brush,
-                    CornerRadius = new CornerRadius(sz / 2),
-                    Child = tb,
-                };
-                Canvas.SetLeft(bg, a.X * dip - sz / 2); Canvas.SetTop(bg, a.Y * dip - sz / 2);
-                _annotLayer.Children.Add(bg);
-                break;
-            }
-        }
-    }
-
-    /// <summary>浮动样式条：8 色 + 粗细 −/+ + 数字 + ✕（只对选中的标注生效）。</summary>
     private void UpdateFloatBar()
     {
         _floatLayer.Children.Clear();
@@ -1861,7 +1316,9 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
                 Cursor = Cursors.Arrow,
                 ToolTip = "样式（线型/箭头形状）",
             };
-            var styleMenu = a.Tool == AnnotationTool.Arrow ? BuildArrowMenu() : BuildLineStyleMenu();
+            var styleMenu = a.Tool == AnnotationTool.Arrow
+                ? AnnotationStyleMenus.BuildArrowMenu(_annotArrowStyle, _annotDashed, OnArrowStyleApply)
+                : AnnotationStyleMenus.BuildLineStyleMenu(_annotDashed, OnLineStyleApply);
             styleBtn.Click += (_, _) => { styleMenu.PlacementTarget = styleBtn; styleMenu.IsOpen = true; };
             styleBtn.ContextMenu = styleMenu;
             panel.Children.Add(styleBtn);
@@ -1966,40 +1423,6 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
     }
 
     /// <summary>圆角矩形路径（DIP 坐标，预览层用）。</summary>
-    private static StreamGeometry RoundRectGeometryDip(double x, double y, double w, double h, double r)
-    {
-        r = Math.Clamp(r, 0, Math.Min(w, h) / 2);
-        var geo = new StreamGeometry();
-        using (var g = geo.Open())
-        {
-            if (r < 0.5)
-            {
-                g.BeginFigure(new Point(x, y), true, true);
-                g.LineTo(new Point(x + w, y), true, false);
-                g.LineTo(new Point(x + w, y + h), true, false);
-                g.LineTo(new Point(x, y + h), true, false);
-            }
-            else
-            {
-                g.BeginFigure(new Point(x + r, y), true, true);
-                g.LineTo(new Point(x + w - r, y), true, false);
-                g.ArcTo(new Point(x + w, y + r), new Size(r, r), 0, false, SweepDirection.Clockwise, true, false);
-                g.LineTo(new Point(x + w, y + h - r), true, false);
-                g.ArcTo(new Point(x + w - r, y + h), new Size(r, r), 0, false, SweepDirection.Clockwise, true, false);
-                g.LineTo(new Point(x + r, y + h), true, false);
-                g.ArcTo(new Point(x, y + h - r), new Size(r, r), 0, false, SweepDirection.Clockwise, true, false);
-                g.LineTo(new Point(x, y + r), true, false);
-                g.ArcTo(new Point(x + r, y), new Size(r, r), 0, false, SweepDirection.Clockwise, true, false);
-            }
-        }
-        geo.Freeze();
-        return geo;
-    }
-
-    /// <summary>
-    /// 在预览层画曲线箭头（二次贝塞尔三点：起点 / 弯曲控制点 / 终点；头沿终点切线）。
-    /// 坐标为 DIP，brush 为实色，stroke 为 DIP 线宽。
-    /// </summary>
     private void AddArrowPreview(double x0, double y0, double cx, double cy, double x2, double y2, Brush brush, double stroke, bool dashed = false, ArrowStyle style = ArrowStyle.Solid)
     {
         var color = ((SolidColorBrush)brush).Color;

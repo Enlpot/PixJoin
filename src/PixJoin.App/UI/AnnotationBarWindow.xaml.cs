@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using PixJoin.Core.Models;
+using PixJoin.Core.Services;
 
 namespace PixJoin.App.UI;
 
@@ -16,8 +17,11 @@ public partial class AnnotationBarWindow : Window
     public event Action<double>? ThicknessChanged;
     public event Action? UndoRequested;
     public event Action? DoneRequested;
+    public event Action<ArrowStyle, bool>? StyleApplied;   // 样式菜单：箭头样式 + 线型
 
     private Color _color = Color.FromRgb(0xE5, 0x39, 0x35);   // 默认红
+    private ArrowStyle _arrowStyle = ArrowStyle.Solid;
+    private bool _dashed;
 
     public AnnotationBarWindow()
     {
@@ -31,6 +35,26 @@ public partial class AnnotationBarWindow : Window
         if (sender is not RadioButton rb || !Enum.TryParse(rb.Tag?.ToString(), out AnnotationTool tool)) return;
         CurrentTool = tool;
         ToolChanged?.Invoke(tool);
+    }
+
+    /// <summary>样式下拉（箭头=箭头样式+线型；其余=线型），点击后回传给贴图窗口统一应用。</summary>
+    private void OnStyleMenu(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn) return;
+        var menu = CurrentTool == AnnotationTool.Arrow
+            ? AnnotationStyleMenus.BuildArrowMenu(_arrowStyle, _dashed, (s, d) =>
+            {
+                _arrowStyle = s;
+                _dashed = d;
+                StyleApplied?.Invoke(s, d);
+            })
+            : AnnotationStyleMenus.BuildLineStyleMenu(_dashed, d =>
+            {
+                _dashed = d;
+                StyleApplied?.Invoke(_arrowStyle, d);
+            });
+        menu.PlacementTarget = btn;
+        menu.IsOpen = true;
     }
 
     private void OnColorClicked(object sender, RoutedEventArgs e)

@@ -13,12 +13,13 @@ public static class ImageProcessorTests
     {
         Check.Section("ImageProcessor 图像处理");
 
-        // 灰度：纯红 → 亮度 = round(0.299*255) = 76
+        // 灰度：纯红 → 三通道相等且显著变暗（ImageSharp BT.709 感知亮度，红≈54）
         {
             var red = TestBitmap.Solid(4, 4, Colors.Red);
             var g = ImageProcessor.ToGrayscale(red);
             var px = PixelAt(g, 1, 1);
-            Check.True(px.R == 76 && px.G == 76 && px.B == 76, "灰度：纯红转亮度 76");
+            Check.True(px.R == px.G && px.G == px.B, "灰度：纯红后 R=G=B");
+            Check.True(px.R < 120, $"灰度：纯红亮度显著降低（实际 {px.R}）");
         }
 
         // 反色：黑 ↔ 白

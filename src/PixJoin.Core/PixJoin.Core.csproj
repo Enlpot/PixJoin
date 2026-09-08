@@ -16,4 +16,8 @@
     <Using Include="System.Windows.Media.Imaging" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="SixLabors.ImageSharp" Version="4.1.1" ExcludeAssets="build" />
+  </ItemGroup>
+
 </Project>

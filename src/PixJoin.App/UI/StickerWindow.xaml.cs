@@ -54,6 +54,13 @@ public sealed partial class StickerWindow : Window
     private Point _annotStart;                   // 拖动起点（窗口 DIP）
     private Point _annotLast;                    // 当前点（窗口 DIP）
     private List<double> _annotPenPts = new();
+    private int? _annotSelIndex;             // 选中的标注索引（null=无选中；与截图侧一致）
+    private AnnotHandle? _annotDragHandle;   // 正在拖动的控制点
+    private bool _annotDraggingBody;         // 正在拖动标注本体
+    private Point _annotDragOffset;          // 本体拖动锚点（物理像素，相对标注 X/Y）
+    private double _annotArrowT = 0.5;       // 箭头弧顶控制点在曲线上的锁定参数 t
+    private bool _annotDashed;                // 默认线型（虚线开关，作用于新标注/选中标注，与截图一致）
+    private ArrowStyle _annotArrowStyle = ArrowStyle.Solid;   // 默认箭头样式
     private int _annotNumberSeq;
 
     public Sticker Sticker { get; }
@@ -286,8 +293,22 @@ public sealed partial class StickerWindow : Window
 
     private void OnMouseWheel(object sender, MouseWheelEventArgs e)
     {
-        // 标注模式：滚轮不缩放
-        if (_annotating) { e.Handled = true; return; }
+        // 标注模式：滚轮只调整选中标注的粗细（±1，clamp 1~20），与截图一致
+        if (_annotating)
+        {
+            if (_annotSelIndex is { } si && si >= 0 && si < _annotations.Count)
+            {
+                var a = _annotations[si];
+                double nt = Math.Clamp(a.Thickness + (e.Delta > 0 ? 1 : -1), 1, 20);
+                if (Math.Abs(nt - a.Thickness) > 0.01)
+                {
+                    _annotations[si] = AnnotationHandles.Rebuild(a, thickness: nt);
+                    RefreshAnnotationLayer();
+                }
+            }
+            e.Handled = true;
+            return;
+        }
 
         // 锁定：滚轮缩放 / 调透明度都禁用
         if (Sticker.IsLocked) { e.Handled = true; return; }
@@ -655,6 +676,10 @@ public sealed partial class StickerWindow : Window
         _annotating = true;
         _annotNumberSeq = 0;
         ClearTextSelection();
+        _annotSelIndex = null;
+        _annotDragHandle = null;
+        _annotDraggingBody = false;
+        _annotArrowT = 0.5;
 
         if (_annotBar is null)
         {
@@ -665,6 +690,14 @@ public sealed partial class StickerWindow : Window
             _annotBar.ThicknessChanged += t => _annotThickness = t;
             _annotBar.UndoRequested += UndoAnnotationStep;
             _annotBar.DoneRequested += () => ExitAnnotationMode(commit: true);
+            _annotBar.StyleApplied += (s, d) =>
+            {
+                _annotArrowStyle = s;
+                _annotDashed = d;
+                if (_annotSelIndex is { } si && si >= 0 && si < _annotations.Count)
+                    _annotations[si] = AnnotationHandles.Rebuild(_annotations[si], dashed: d, arrow: s);
+                RefreshAnnotationLayer();
+            };
         }
         PositionAnnotationBar();
         _annotBar.Show();
@@ -681,6 +714,9 @@ public sealed partial class StickerWindow : Window
         if (!_annotating) return;
         _annotating = false;
         _annotDrawing = false;
+        _annotSelIndex = null;
+        _annotDragHandle = null;
+        _annotDraggingBody = false;
         if (IsMouseCaptured) ReleaseMouseCapture();
 
         AnnotationLayer.Children.Clear();
@@ -713,6 +749,7 @@ public sealed partial class StickerWindow : Window
     {
         if (!_annotating || _annotations.Count == 0) return;
         _annotations.RemoveAt(_annotations.Count - 1);
+        _annotSelIndex = _annotations.Count > 0 ? Math.Min(_annotSelIndex ?? int.MaxValue, _annotations.Count - 1) : null;
         RefreshAnnotationLayer();
     }
 
@@ -730,10 +767,44 @@ public sealed partial class StickerWindow : Window
 
     private void HandleAnnotationDown(Point p)
     {
+        var ip = ToImageCoord(p);
+
+        // 1. 已选中标注：先命中控制点 → 直接拖控制点（角/边=拉伸、圆角=调弧度、箭头=调三点）
+        if (_annotSelIndex is { } sel && sel >= 0 && sel < _annotations.Count)
+        {
+            var hh = AnnotationHandles.HitTest(AnnotationHandles.Get(_annotations[sel], _annotArrowT), ip);
+            if (hh is not null)
+            {
+                _annotDragHandle = hh;
+                _annotDrawing = false;
+                CaptureMouse();
+                RefreshAnnotationLayer();
+                return;
+            }
+        }
+
+        // 2. 命中已有标注（从新到旧，精确命中）→ 选中并拖动本体
+        for (int i = _annotations.Count - 1; i >= 0; i--)
+        {
+            if (AnnotationHandles.HitShape(_annotations[i], ip, 5))
+            {
+                _annotSelIndex = i;
+                _annotDraggingBody = true;
+                var a = _annotations[i];
+                _annotDragOffset = new Point(ip.X - a.X, ip.Y - a.Y);
+                _annotArrowT = 0.5;
+                CaptureMouse();
+                RefreshAnnotationLayer();
+                return;
+            }
+        }
+
+        // 3. 空白：取消选中，开始新绘制（与截图侧一致）
+        _annotSelIndex = null;
+
         if (_annotTool == AnnotationTool.Text || _annotTool == AnnotationTool.Number)
         {
             // 落点工具：立即生成元素，不进入拖动
-            var img = ToImageCoord(p);
             if (_annotTool == AnnotationTool.Text)
             {
                 var dlg = new TextInputWindow { Owner = this };
@@ -741,9 +812,10 @@ public sealed partial class StickerWindow : Window
                 {
                     _annotations.Add(new Annotation
                     {
-                        Tool = AnnotationTool.Text, X = img.X, Y = img.Y,
+                        Tool = AnnotationTool.Text, X = ip.X, Y = ip.Y,
                         Text = dlg.ResultText, Color = _annotColor, Thickness = _annotThickness,
                     });
+                    _annotSelIndex = _annotations.Count - 1;
                     RefreshAnnotationLayer();
                 }
             }
@@ -752,9 +824,10 @@ public sealed partial class StickerWindow : Window
                 _annotNumberSeq++;
                 _annotations.Add(new Annotation
                 {
-                    Tool = AnnotationTool.Number, X = img.X, Y = img.Y,
+                    Tool = AnnotationTool.Number, X = ip.X, Y = ip.Y,
                     Number = _annotNumberSeq, Color = _annotColor, Thickness = _annotThickness,
                 });
+                _annotSelIndex = _annotations.Count - 1;
                 RefreshAnnotationLayer();
             }
             return;
@@ -764,7 +837,6 @@ public sealed partial class StickerWindow : Window
         _annotStart = p;
         _annotLast = p;
         _annotPenPts.Clear();
-        var ip = ToImageCoord(p);
         _annotPenPts.Add(ip.X);
         _annotPenPts.Add(ip.Y);
         CaptureMouse();
@@ -773,11 +845,37 @@ public sealed partial class StickerWindow : Window
 
     private void HandleAnnotationMove(Point p)
     {
+        var ip = ToImageCoord(p);
+
+        // 拖控制点（与截图侧同一套变形公式）
+        if (_annotDragHandle is { } hh && _annotSelIndex is { } si && si >= 0 && si < _annotations.Count)
+        {
+            var updated = AnnotationHandles.ApplyDrag(_annotations[si], hh, ip, _annotArrowT);
+            if (updated is not null)
+            {
+                _annotations[si] = updated;
+                RefreshAnnotationLayer();
+            }
+            return;
+        }
+
+        // 拖标注本体（帧增量，保证 1:1 跟手）
+        if (_annotDraggingBody && _annotSelIndex is { } sib && sib >= 0 && sib < _annotations.Count)
+        {
+            var a = _annotations[sib];
+            var delta = new Point(ip.X - _annotDragOffset.X - a.X, ip.Y - _annotDragOffset.Y - a.Y);
+            if (Math.Abs(delta.X) > 0.01 || Math.Abs(delta.Y) > 0.01)
+            {
+                _annotations[sib] = AnnotationHandles.Move(a, delta);
+                RefreshAnnotationLayer();
+            }
+            return;
+        }
+
         if (!_annotDrawing) return;
         _annotLast = p;
         if (_annotTool == AnnotationTool.Pen)
         {
-            var ip = ToImageCoord(p);
             _annotPenPts.Add(ip.X);
             _annotPenPts.Add(ip.Y);
         }
@@ -786,6 +884,16 @@ public sealed partial class StickerWindow : Window
 
     private void HandleAnnotationUp(Point p)
     {
+        // 拖控制点 / 拖本体结束
+        if (_annotDragHandle is not null || _annotDraggingBody)
+        {
+            _annotDragHandle = null;
+            _annotDraggingBody = false;
+            if (IsMouseCaptured) ReleaseMouseCapture();
+            RefreshAnnotationLayer();
+            return;
+        }
+
         if (!_annotDrawing) return;
         _annotDrawing = false;
         if (IsMouseCaptured) ReleaseMouseCapture();
@@ -811,7 +919,8 @@ public sealed partial class StickerWindow : Window
             case AnnotationTool.Arrow:
                 _annotations.Add(new Annotation
                 {
-                    Tool = AnnotationTool.Arrow, X = s.X, Y = s.Y, W = e.X - s.X, H = e.Y - s.Y,
+                    Tool = AnnotationTool.Arrow,
+                    Points = new[] { s.X, s.Y, (s.X + e.X) / 2, (s.Y + e.Y) / 2, e.X, e.Y },
                     Color = _annotColor, Thickness = _annotThickness,
                 });
                 break;
@@ -829,6 +938,7 @@ public sealed partial class StickerWindow : Window
                 break;
         }
 
+        _annotSelIndex = _annotations.Count - 1;
         RefreshAnnotationLayer();
     }
 
@@ -837,16 +947,191 @@ public sealed partial class StickerWindow : Window
     {
         AnnotationLayer.Children.Clear();
         foreach (var a in _annotations) AddAnnotationPreview(a);
-        if (_annotDrawing)
+        // 选中标注：画选中框 + 控制点（与截图侧完全一致；绘制中隐藏）
+        if (!_annotDrawing && _annotSelIndex is { } sel && sel >= 0 && sel < _annotations.Count)
         {
-            // 进行中：用起点/终点构造临时预览
+            double hsx = Img.ActualWidth / Sticker.Image.PixelWidth;
+            double hsy = Img.ActualHeight / Sticker.Image.PixelHeight;
+            AnnotationPainter.DrawHandles(AnnotationLayer, _annotations[sel], hsx, hsy, _annotArrowT);
+        }
+        DrawFloatBar();
+        if (_annotDrawing && _annotTool is { } tool)
+        {
             var s = ToImageCoord(_annotStart);
             var e = ToImageCoord(_annotLast);
-            var tool = _annotTool == AnnotationTool.Pen
-                ? new Annotation { Tool = AnnotationTool.Pen, Points = _annotPenPts.ToArray(), Color = _annotColor, Thickness = _annotThickness }
-                : new Annotation { Tool = _annotTool, X = Math.Min(s.X, e.X), Y = Math.Min(s.Y, e.Y), W = Math.Abs(e.X - s.X), H = Math.Abs(e.Y - s.Y), Color = _annotColor, Thickness = _annotThickness };
-            AddAnnotationPreview(tool);
+            Annotation? tmp = null;
+            switch (tool)
+            {
+                case AnnotationTool.Rect:
+                case AnnotationTool.Mosaic:
+                case AnnotationTool.Ellipse:
+                case AnnotationTool.Highlight:
+                    tmp = new Annotation
+                    {
+                        Tool = tool, Color = _annotColor, Thickness = _annotThickness,
+                        X = Math.Min(s.X, e.X), Y = Math.Min(s.Y, e.Y),
+                        W = Math.Abs(e.X - s.X), H = Math.Abs(e.Y - s.Y),
+                    };
+                    break;
+                case AnnotationTool.Arrow:
+                    tmp = new Annotation
+                    {
+                        Tool = tool, Color = _annotColor, Thickness = _annotThickness,
+                        Points = new[] { s.X, s.Y, (s.X + e.X) / 2, (s.Y + e.Y) / 2, e.X, e.Y },
+                    };
+                    break;
+                case AnnotationTool.Pen:
+                    tmp = new Annotation
+                    {
+                        Tool = tool, Color = _annotColor, Thickness = _annotThickness,
+                        Points = _annotPenPts.ToArray(),
+                    };
+                    break;
+            }
+            if (tmp is not null) AddAnnotationPreview(tmp);
         }
+    }
+
+    /// <summary>
+    /// 选中标注浮动条（样式▾ + 8 色 + 粗细 −/数字/+ + 删除），与截图侧一致。
+    /// 画在标注层最上方；位于标注上方，放不下时移到下方。
+    /// </summary>
+    private void DrawFloatBar()
+    {
+        if (_annotSelIndex is not { } si || si < 0 || si >= _annotations.Count) return;
+        var a = _annotations[si];
+        double sx = Img.ActualWidth / Sticker.Image.PixelWidth;
+        double sy = Img.ActualHeight / Sticker.Image.PixelHeight;
+        var selColor = a.Color;
+
+        var panel = new StackPanel { Orientation = Orientation.Horizontal, Background = new SolidColorBrush(Color.FromArgb(0xEE, 0x22, 0x22, 0x22)) };
+
+        // 样式下拉（箭头=样式+线型；其余=线型），作用于选中标注
+        if (a.Tool != AnnotationTool.Highlight && a.Tool != AnnotationTool.Mosaic)
+        {
+            var styleBtn = new Button
+            {
+                Content = new TextBlock { Text = "▾", Foreground = Brushes.White, FontSize = 12, Margin = new Thickness(2, 0, 2, 0) },
+                Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A)),
+                BorderThickness = new Thickness(0),
+                Padding = new Thickness(5, 1, 5, 1),
+                Cursor = Cursors.Arrow,
+                ToolTip = "样式（线型/箭头形状）",
+            };
+            var styleMenu = a.Tool == AnnotationTool.Arrow
+                ? AnnotationStyleMenus.BuildArrowMenu(_annotArrowStyle, _annotDashed, ApplyAnnotStyle)
+                : AnnotationStyleMenus.BuildLineStyleMenu(_annotDashed, ApplyAnnotStyle);
+            styleBtn.Click += (_, _) => { styleMenu.PlacementTarget = styleBtn; styleMenu.IsOpen = true; };
+            panel.Children.Add(styleBtn);
+        }
+
+        foreach (var cc in AnnotationStyleMenus.Colors)
+        {
+            bool active = cc == selColor;
+            var cb = new Border
+            {
+                Width = 14, Height = 14,
+                Background = new SolidColorBrush(cc),
+                CornerRadius = new CornerRadius(2),
+                Margin = new Thickness(2),
+                BorderBrush = active ? Brushes.White : Brushes.Transparent,
+                BorderThickness = new Thickness(active ? 2 : 1),
+                Cursor = Cursors.Hand,
+                Tag = cc,
+            };
+            var target = si;
+            cb.MouseLeftButtonDown += (_, _) =>
+            {
+                _annotations[target] = AnnotationHandles.Rebuild(_annotations[target], color: (Color)cb.Tag);
+                RefreshAnnotationLayer();
+            };
+            panel.Children.Add(cb);
+        }
+
+        var minus = MakeFloatBtn("−");
+        minus.Click += (_, _) => AdjustAnnotThickness(-1);
+        panel.Children.Add(minus);
+
+        var num = new TextBlock
+        {
+            Text = $"{a.Thickness:0.#}",
+            Foreground = Brushes.White,
+            FontSize = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(2, 0, 2, 0),
+        };
+        panel.Children.Add(num);
+
+        var plus = MakeFloatBtn("+");
+        plus.Click += (_, _) => AdjustAnnotThickness(1);
+        panel.Children.Add(plus);
+
+        var del = MakeFloatBtn("✕");
+        del.Click += (_, _) =>
+        {
+            if (_annotSelIndex is { } dsi && dsi >= 0 && dsi < _annotations.Count)
+            {
+                _annotations.RemoveAt(dsi);
+                _annotSelIndex = null;
+                RefreshAnnotationLayer();
+            }
+        };
+        panel.Children.Add(del);
+
+        var host = new Border
+        {
+            Child = panel,
+            Background = new SolidColorBrush(Color.FromArgb(0xEE, 0x22, 0x22, 0x22)),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(3),
+        };
+
+        var b = AnnotationHandles.Bounds(a);
+        double fx = (b.X + b.Width / 2) * sx;
+        double fy = b.Y * sy - 34;
+        if (fy < 0) fy = (b.Y + b.Height) * sy + 8;
+        Canvas.SetLeft(host, fx);
+        Canvas.SetTop(host, fy);
+        AnnotationLayer.Children.Add(host);
+    }
+
+    private Button MakeFloatBtn(string glyph) => new()
+    {
+        Content = new TextBlock { Text = glyph, Foreground = Brushes.White, FontSize = 12 },
+        Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A)),
+        BorderThickness = new Thickness(0),
+        Padding = new Thickness(5, 1, 5, 1),
+        Margin = new Thickness(1, 0, 1, 0),
+        Cursor = Cursors.Arrow,
+    };
+
+    private void AdjustAnnotThickness(double delta)
+    {
+        if (_annotSelIndex is not { } si || si < 0 || si >= _annotations.Count) return;
+        var a = _annotations[si];
+        double nt = Math.Clamp(a.Thickness + delta, 1, 20);
+        if (Math.Abs(nt - a.Thickness) > 0.01)
+        {
+            _annotations[si] = AnnotationHandles.Rebuild(a, thickness: nt);
+            RefreshAnnotationLayer();
+        }
+    }
+
+    private void ApplyAnnotStyle(bool dashed)
+    {
+        _annotDashed = dashed;
+        if (_annotSelIndex is { } si && si >= 0 && si < _annotations.Count)
+            _annotations[si] = AnnotationHandles.Rebuild(_annotations[si], dashed: dashed);
+        RefreshAnnotationLayer();
+    }
+
+    private void ApplyAnnotStyle(ArrowStyle style, bool dashed)
+    {
+        _annotArrowStyle = style;
+        _annotDashed = dashed;
+        if (_annotSelIndex is { } si && si >= 0 && si < _annotations.Count)
+            _annotations[si] = AnnotationHandles.Rebuild(_annotations[si], dashed: dashed, arrow: style);
+        RefreshAnnotationLayer();
     }
 
     /// <summary>物理像素 → 窗口 DIP（用于预览层定位）。</summary>
@@ -858,79 +1143,8 @@ public sealed partial class StickerWindow : Window
     {
         double sx = Img.ActualWidth / Sticker.Image.PixelWidth;
         double sy = Img.ActualHeight / Sticker.Image.PixelHeight;
-
-        var brush = new SolidColorBrush(a.Color);
-        brush.Freeze();
-        var pen = new Pen(brush, Math.Max(1, a.Thickness * (sx + sy) / 2));
-        pen.Freeze();
-
-        switch (a.Tool)
-        {
-            case AnnotationTool.Rect:
-            case AnnotationTool.Highlight:
-            case AnnotationTool.Mosaic:
-            {
-                var fill = a.Tool == AnnotationTool.Highlight ? new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xE2, 0x3C))
-                        : a.Tool == AnnotationTool.Mosaic ? new SolidColorBrush(Color.FromArgb(0x33, 0x00, 0x00, 0x00))
-                        : null;
-                fill?.Freeze();
-                // WPF 闭合控件外描边：外扩 t/2 使描边中心回到几何边界，与最终渲染一致
-                double th2 = a.Tool == AnnotationTool.Rect ? a.Thickness / 2 : 0;
-                var r = new Rectangle { Width = Math.Max(1, (a.W + th2 * 2) * sx), Height = Math.Max(1, (a.H + th2 * 2) * sy), Stroke = a.Tool == AnnotationTool.Rect ? brush : null, Fill = fill };
-                Canvas.SetLeft(r, (a.X - th2) * sx);
-                Canvas.SetTop(r, (a.Y - th2) * sy);
-                AnnotationLayer.Children.Add(r);
-                break;
-            }
-
-            case AnnotationTool.Arrow:
-            {
-                var line = new Line
-                {
-                    X1 = a.X * sx, Y1 = a.Y * sy, X2 = (a.X + a.W) * sx, Y2 = (a.Y + a.H) * sy,
-                    Stroke = brush, StrokeThickness = Math.Max(1, a.Thickness * (sx + sy) / 2),
-                    StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round,
-                };
-                AnnotationLayer.Children.Add(line);
-                break;
-            }
-
-            case AnnotationTool.Pen:
-            {
-                if (a.Points is { Length: >= 4 })
-                {
-                    var pts = new PointCollection();
-                    for (int i = 0; i < a.Points.Length; i += 2)
-                        pts.Add(new Point(a.Points[i] * sx, a.Points[i + 1] * sy));
-                    var pl = new Polyline { Points = pts, Stroke = brush, StrokeThickness = Math.Max(1, a.Thickness * (sx + sy) / 2), StrokeLineJoin = PenLineJoin.Round };
-                    AnnotationLayer.Children.Add(pl);
-                }
-                break;
-            }
-
-            case AnnotationTool.Text:
-            {
-                var tb = new TextBlock { Text = a.Text, Foreground = brush, FontSize = Math.Max(10, a.Thickness * 4 * (sx + sy) / 2) };
-                Canvas.SetLeft(tb, a.X * sx);
-                Canvas.SetTop(tb, a.Y * sy);
-                AnnotationLayer.Children.Add(tb);
-                break;
-            }
-
-            case AnnotationTool.Number:
-            {
-                double r = Math.Max(8, a.Thickness * 2.5 * (sx + sy) / 2);
-                var ell = new Ellipse { Width = r * 2, Height = r * 2, Fill = brush };
-                Canvas.SetLeft(ell, a.X * sx - r);
-                Canvas.SetTop(ell, a.Y * sy - r);
-                AnnotationLayer.Children.Add(ell);
-                var tb = new TextBlock { Text = a.Number.ToString(), Foreground = Brushes.White, FontSize = r * 1.3, TextAlignment = TextAlignment.Center };
-                Canvas.SetLeft(tb, a.X * sx - r * 0.55);
-                Canvas.SetTop(tb, a.Y * sy - r * 0.8);
-                AnnotationLayer.Children.Add(tb);
-                break;
-            }
-        }
+        // 与截图侧同一渲染器，保证两种入口标注外观完全一致
+        AnnotationPainter.Draw(AnnotationLayer, a, sx, sy);
     }
 
     /// <summary>图片被标注 / 图像处理替换后刷新显示（更新源、窗口尺寸、叠加层状态）。</summary>
