@@ -92,6 +92,31 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
     private enum HandleKind { Corner, Edge, Round, ArrowPt, Move }
     private readonly record struct AnnotHandle(HandleKind Kind, Point Pos, int Index);
     private AnnotHandle? _activeHandle;    // 当前拖动的控制点
+    private Point? _arrowLivePt;           // 箭头中点控制点拖动中的实时位置（跟手显示）
+    private double _arrowDragT = 0.5;      // 箭头中点控制点在曲线上锁定的参数 t（反解保证 B(t)=鼠标，控制点恒骑线）
+    private bool _dragLive;                 // 拖动中（控制点/标注本体）：跳过调试文本与距离计算，保证跟手
+
+    // ---- [DEBUG] 拖动性能日志：内存队列，OnLeftUp 一次性写盘，避免日志 IO 干扰测量 ----
+    private static readonly List<string> _dbgLog = new();
+    private static readonly System.Diagnostics.Stopwatch _dbgSw = System.Diagnostics.Stopwatch.StartNew();
+    private long _lastMoveTicks;
+    private double _lastRefreshMs;
+    private static void DbLog(string msg)
+    {
+        _dbgLog.Add($"{_dbgSw.ElapsedMilliseconds}ms|{msg}");
+        if (_dbgLog.Count >= 200) DbFlush();   // 防内存无限增长，满 200 条先写一次
+    }
+    private static void DbFlush()
+    {
+        try
+        {
+            var dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PixJoin");
+            System.IO.Directory.CreateDirectory(dir);
+            System.IO.File.AppendAllLines(System.IO.Path.Combine(dir, "annot_debug.log"), _dbgLog);
+        }
+        catch { }
+        _dbgLog.Clear();
+    }
 
     private static readonly Color[] AnnotColors =
     {
@@ -203,16 +228,16 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
                 if (hh is { } h)
                 {
                     _activeHandle = h;
+                    _dragLive = true;
                     CaptureMouse();
                     e.Handled = true;
                     return;
                 }
 
-                var b = GetAnnotBounds(_annotations[si]);
-                b.Inflate(5, 5);
-                if (b.Contains(rel))
+                if (HitAnnotShape(_annotations[si], rel, 5))
                 {
                     _draggingAnnot = true;
+                    _dragLive = true;
                     _dragOffset = new Point(rel.X - _annotations[si].X, rel.Y - _annotations[si].Y);
                     CaptureMouse();
                     e.Handled = true;
@@ -263,16 +288,25 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
     {
         if (_hasSelection)
         {
+            // 悬停光标：控制点/标注本体给出对应提示标记
+            UpdateHoverCursor(new Point(GetCursorPhysical().X - _selectionRect.X, GetCursorPhysical().Y - _selectionRect.Y));
+
             // 拖动控制点（缩放 / 拉伸 / 圆角 / 箭头调整）
             if (_activeHandle is { } ah && _selectedIndex is { } si2)
             {
                 var p = GetCursorPhysical();
                 var rel = new Point(p.X - _selectionRect.X, p.Y - _selectionRect.Y);
+                long now = _dbgSw.ElapsedMilliseconds;
+                if (_lastMoveTicks != 0 && now - _lastMoveTicks > 5)
+                    DbLog($"MOVE {ah.Kind}:{ah.Index} gap={now - _lastMoveTicks}ms rel=({rel.X:0},{rel.Y:0})");
+                _lastMoveTicks = now;
                 var updated = ApplyHandleDrag(_annotations[si2], ah, rel);
                 if (updated is not null)
                 {
                     _annotations[si2] = updated;
+                    _arrowLivePt = (ah.Kind == HandleKind.ArrowPt && ah.Index == 1) ? rel : (Point?)null;
                     RefreshAnnotationLayer();
+                    DbLog($"  after-refresh {_lastRefreshMs:0.0}ms pts=({_annotations[si2].Points?[0]:0},{_annotations[si2].Points?[1]:0},{_annotations[si2].Points?[2]:0},{_annotations[si2].Points?[3]:0})");
                 }
                 return;
             }
@@ -283,11 +317,17 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
                 var p = GetCursorPhysical();
                 var rel = new Point(p.X - _selectionRect.X, p.Y - _selectionRect.Y);
                 var a = _annotations[si];
+                // 拖动中不做任何钳制：保证 100% 跟手（钳制会截断移动量，是"不跟手"的根因）
                 var delta = new Point(rel.X - _dragOffset.X - a.X, rel.Y - _dragOffset.Y - a.Y);
                 if (Math.Abs(delta.X) > 0.01 || Math.Abs(delta.Y) > 0.01)
                 {
+                    long now = _dbgSw.ElapsedMilliseconds;
+                    if (_lastMoveTicks != 0 && now - _lastMoveTicks > 5)
+                        DbLog($"MOVE-ANNOT {a.Tool} gap={now - _lastMoveTicks}ms rel=({rel.X:0},{rel.Y:0}) delta=({delta.X:0},{delta.Y:0})");
+                    _lastMoveTicks = now;
                     _annotations[si] = MoveAnnotation(a, delta);
                     RefreshAnnotationLayer();
+                    DbLog($"  after-refresh {_lastRefreshMs:0.0}ms");
                 }
                 return;
             }
@@ -313,7 +353,12 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         if (_activeHandle is { })
         {
             _activeHandle = null;
+            _dragLive = false;
+            _arrowLivePt = null;
+            DbLog($"LEFTUP handle end (lastRefresh={_lastRefreshMs:0.0}ms)");
+            DbFlush();
             ReleaseMouseCapture();
+            RefreshAnnotationLayer();   // 恢复控制点显示（拖动中曾隐藏）
             e.Handled = true;
             return;
         }
@@ -321,7 +366,32 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         if (_draggingAnnot)
         {
             _draggingAnnot = false;
+            _dragLive = false;
+            DbLog($"LEFTUP move end (lastRefresh={_lastRefreshMs:0.0}ms)");
+            DbFlush();
+            // 防丢：若标注完全在选区外（不可见），拉回选区边缘；部分可见/完全包裹选区则不动
+            if (_selectedIndex is { } sidx && sidx >= 0 && sidx < _annotations.Count)
+            {
+                var nb = GetAnnotBounds(_annotations[sidx]);
+                double pad = Math.Max(3, _annotations[sidx].Thickness * 1.5);
+                var sel = new Rect(pad, pad, Math.Max(1, _selectionRect.Width - pad * 2), Math.Max(1, _selectionRect.Height - pad * 2));
+                if (!nb.IntersectsWith(sel))
+                {
+                    double dx = 0, dy = 0;
+                    if (nb.Right < sel.Left) dx = sel.Left - nb.Right;
+                    else if (nb.Left > sel.Right) dx = sel.Right - nb.Left;
+                    if (nb.Bottom < sel.Top) dy = sel.Top - nb.Bottom;
+                    else if (nb.Top > sel.Bottom) dy = sel.Bottom - nb.Top;
+                    if (Math.Abs(dx) > 0.01 || Math.Abs(dy) > 0.01)
+                    {
+                        _annotations[sidx] = MoveAnnotation(_annotations[sidx], new Point(dx, dy));
+                        DbLog($"LEFTUP pullback ({dx:0},{dy:0})");
+                        RefreshAnnotationLayer();
+                    }
+                }
+            }
             ReleaseMouseCapture();
+            RefreshAnnotationLayer();   // 恢复控制点显示（拖动中曾隐藏；含拉回时以最终位置重绘）
             e.Handled = true;
             return;
         }
@@ -433,6 +503,32 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
     }
 
     // ================= 选区逻辑（保留 v0.2） =================
+
+    /// <summary>根据悬停位置设置光标：控制点=对应拉伸方向，标注本体=四向移动，否则恢复。</summary>
+    private void UpdateHoverCursor(Point rel)
+    {
+        if (_selectedIndex is { } si && si >= 0 && si < _annotations.Count)
+        {
+            var hh = HitTestHandle(GetHandles(_annotations[si]), rel);
+            if (hh is { } h)
+            {
+                Cursor = h.Kind switch
+                {
+                    HandleKind.Edge => (h.Index == 0 || h.Index == 2) ? Cursors.SizeNS : Cursors.SizeWE,
+                    HandleKind.Corner => (h.Index == 0 || h.Index == 3) ? Cursors.SizeNWSE : Cursors.SizeNESW,
+                    HandleKind.Round => Cursors.SizeNWSE,
+                    HandleKind.ArrowPt => h.Index == 1 ? Cursors.Hand : Cursors.SizeAll,
+                    HandleKind.Move => Cursors.SizeAll,
+                    _ => Cursors.Arrow,
+                };
+                return;
+            }
+            var b = GetAnnotBounds(_annotations[si]);
+            b.Inflate(5, 5);
+            if (b.Contains(rel)) { Cursor = Cursors.SizeAll; return; }
+        }
+        Cursor = _annotTool.HasValue ? Cursors.Cross : Cursors.Arrow;
+    }
 
     private Rect CurrentRect()
     {
@@ -991,6 +1087,7 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
             }
             case AnnotationTool.Arrow:
                 // 三点：起点、弯曲控制点（初始=中点，拖中部点可弯曲）、终点
+                _arrowDragT = 0.5;   // 新箭头重置中点参数（弦中点=0.5）
                 _annotations.Add(new Annotation
                 {
                     Tool = AnnotationTool.Arrow,
@@ -1093,14 +1190,68 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         }
     }
 
+    /// <summary>点到线段的最短距离（物理像素）。</summary>
+    private static double PointSegDist(double px, double py, double ax, double ay, double bx, double by)
+    {
+        double dx = bx - ax, dy = by - ay;
+        double l2 = dx * dx + dy * dy;
+        double t = l2 > 1e-9 ? Math.Clamp(((px - ax) * dx + (py - ay) * dy) / l2, 0, 1) : 0;
+        double qx = ax + t * dx, qy = ay + t * dy;
+        return Math.Sqrt((px - qx) * (px - qx) + (py - qy) * (py - qy));
+    }
+
+    /// <summary>
+    /// 精确命中：闭合形状用包围盒；箭头=到可见曲线/箭头头部的距离（不再用含弯曲控制点的巨大包围盒）；
+    /// 画笔=到折线距离。这样箭头/画笔包围盒内的空白区域不会误命中，可以正常画其他图形。
+    /// </summary>
+    private bool HitAnnotShape(Annotation a, Point rel, double tol)
+    {
+        switch (a.Tool)
+        {
+            case AnnotationTool.Arrow:
+                if (a.Points is { Length: >= 6 })
+                {
+                    double hit = Math.Max(tol, Math.Max(6, a.Thickness * 1.5));
+                    double x0 = a.Points[0], y0 = a.Points[1], cx = a.Points[2], cy = a.Points[3], x2 = a.Points[4], y2 = a.Points[5];
+                    double hsh = Math.Max(8, Math.Max(1, a.Thickness) * 4);
+                    double dxh = x2 - cx, dyh = y2 - cy, dlh = Math.Sqrt(dxh * dxh + dyh * dyh);
+                    double hrx = dlh > 1e-6 ? x2 - dxh / dlh * hsh : x2;
+                    double hry = dlh > 1e-6 ? y2 - dyh / dlh * hsh : y2;
+                    double px = x0, py = y0;
+                    for (int i = 1; i <= 64; i++)
+                    {
+                        double t = i / 64.0, u = 1 - t;
+                        double qx = u * u * x0 + 2 * t * u * cx + t * t * hrx;
+                        double qy = u * u * y0 + 2 * t * u * cy + t * t * hry;
+                        if (PointSegDist(rel.X, rel.Y, px, py, qx, qy) <= hit) return true;
+                        px = qx; py = qy;
+                    }
+                    // 箭头头部（实心三角）：尖点 hsh 范围内可命中
+                    return Math.Sqrt((rel.X - x2) * (rel.X - x2) + (rel.Y - y2) * (rel.Y - y2)) <= hsh + hit;
+                }
+                return false;
+            case AnnotationTool.Pen:
+                if (a.Points is { Length: >= 4 })
+                {
+                    double hit = Math.Max(tol, Math.Max(6, a.Thickness * 1.5));
+                    for (int i = 2; i + 1 < a.Points.Length; i += 2)
+                        if (PointSegDist(rel.X, rel.Y, a.Points[i - 2], a.Points[i - 1], a.Points[i], a.Points[i + 1]) <= hit) return true;
+                    return false;
+                }
+                return false;
+            default:
+                var b = GetAnnotBounds(a);
+                b.Inflate(tol, tol);
+                return b.Contains(rel);
+        }
+    }
+
     private int? HitTestAnnotation(Point relPhysical)
     {
         const double tol = 5;
         for (int i = _annotations.Count - 1; i >= 0; i--)
         {
-            var b = GetAnnotBounds(_annotations[i]);
-            b.Inflate(tol, tol);
-            if (b.Contains(relPhysical)) return i;
+            if (HitAnnotShape(_annotations[i], relPhysical, tol)) return i;
         }
         return null;
     }
@@ -1112,7 +1263,9 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
             case AnnotationTool.Arrow:
                 if (a.Points is { Length: >= 6 })
                 {
-                    return MakeAnnot(a, points: new[]
+                    // 必须同步更新 X/Y：移动公式 delta=rel-_dragOffset-a.X 依赖 X 每帧更新（帧增量），
+                    // 否则 X 恒为初始值 → delta 永远是总位移，每帧叠加到 Points → 移动量随帧数爆炸
+                    return MakeAnnot(a, x: a.X + delta.X, y: a.Y + delta.Y, points: new[]
                     {
                         a.Points[0] + delta.X, a.Points[1] + delta.Y,
                         a.Points[2] + delta.X, a.Points[3] + delta.Y,
@@ -1129,9 +1282,9 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
                         pts[i] = a.Points[i] + delta.X;
                         pts[i + 1] = a.Points[i + 1] + delta.Y;
                     }
-                    return MakeAnnot(a, points: pts);
+                    return MakeAnnot(a, x: a.X + delta.X, y: a.Y + delta.Y, points: pts);
                 }
-                return a;
+                return MakeAnnot(a, x: a.X + delta.X, y: a.Y + delta.Y);
             default:
                 return MakeAnnot(a, x: a.X + delta.X, y: a.Y + delta.Y);
         }
@@ -1155,6 +1308,29 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
     /// 矩形/高亮/马赛克 = 12 点（4 角=对角缩放、4 边中点=单边拉伸、4 内角=圆角）；
     /// 椭圆 = 8 点；箭头 = 3 点（尾 / 弯曲 / 头）；文字/序号 = 本体移动 + 4 角缩放。
     /// </summary>
+    /// <summary>[DEBUG] 控制点到可见曲线（P0→C→头部根部）的距离，用于验证控制点是否精确骑线。</summary>
+    private static double ArrowHandleCurveDist(Annotation a, AnnotHandle h)
+    {
+        if (a.Points is not { Length: >= 6 }) return double.NaN;
+        double x0 = a.Points[0], y0 = a.Points[1], cx = a.Points[2], cy = a.Points[3], x2 = a.Points[4], y2 = a.Points[5];
+        double hsh = Math.Max(8, Math.Max(1, a.Thickness) * 4);
+        double dxh = x2 - cx, dyh = y2 - cy;
+        double dlh = Math.Sqrt(dxh * dxh + dyh * dyh);
+        double hrxx = dlh > 1e-6 ? x2 - dxh / dlh * hsh : x2;
+        double hryy = dlh > 1e-6 ? y2 - dyh / dlh * hsh : y2;
+        double px = h.Pos.X, py = h.Pos.Y;
+        double best = double.MaxValue;
+        for (int i = 0; i <= 64; i++)
+        {
+            double t = i / 64.0, u = 1 - t;
+            double qx = u * u * x0 + 2 * t * u * cx + t * t * hrxx;
+            double qy = u * u * y0 + 2 * t * u * cy + t * t * hryy;
+            double d = Math.Sqrt((qx - px) * (qx - px) + (qy - py) * (qy - py));
+            if (d < best) best = d;
+        }
+        return best;
+    }
+
     private List<AnnotHandle> GetHandles(Annotation a)
     {
         var list = new List<AnnotHandle>();
@@ -1196,8 +1372,18 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
             case AnnotationTool.Arrow:
                 if (a.Points is { Length: >= 6 })
                 {
+                    // 可见曲线终点 = 头部根部（大头部会截断杆的末端，若不折算，顶点会落在被头部遮住的曲线段上）
+                    double hsh = Math.Max(8, Math.Max(1, a.Thickness) * 4);
+                    double dxh = a.Points[4] - a.Points[2], dyh = a.Points[5] - a.Points[3];
+                    double dlh = Math.Sqrt(dxh * dxh + dyh * dyh);
+                    double hrxx = dlh > 1e-6 ? a.Points[4] - dxh / dlh * hsh : a.Points[4];
+                    double hryy = dlh > 1e-6 ? a.Points[5] - dyh / dlh * hsh : a.Points[5];
+                    // 中点控制点 = 曲线上锁定参数 _arrowDragT 处的点（初始 0.5=视觉中心；拖动中反解保证 B(t)=鼠标）
+                    double ax = _arrowDragT;
+                    double bx = ArrowApexX(ax, a.Points[0], a.Points[2], hrxx);
+                    double by = ArrowApexY(ax, a.Points[1], a.Points[3], hryy);
                     list.Add(new AnnotHandle(HandleKind.ArrowPt, new Point(a.Points[0], a.Points[1]), 0));
-                    list.Add(new AnnotHandle(HandleKind.ArrowPt, new Point(a.Points[2], a.Points[3]), 1));
+                    list.Add(new AnnotHandle(HandleKind.ArrowPt, new Point(bx, by), 1));
                     list.Add(new AnnotHandle(HandleKind.ArrowPt, new Point(a.Points[4], a.Points[5]), 2));
                 }
                 break;
@@ -1219,15 +1405,41 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         return list;
     }
 
+    /// <summary>曲线“顶点”参数：B'(t) ∥ 弦 P0P2（叉积=0，即曲线上离弦最远的点）。退化取 0.5。</summary>
+    private static double ArrowApexT(double x0, double y0, double cx, double cy, double x2, double y2)
+    {
+        double sx = x2 - x0, sy = y2 - y0;
+        double ax = cx - x0, ay = cy - y0;
+        double dx = x2 - 2 * cx + x0, dy = y2 - 2 * cy + y0;
+        double cA = ax * sy - ay * sx;
+        double cD = dx * sy - dy * sx;
+        if (Math.Abs(cD) < 1e-9) return 0.5;
+        return Math.Clamp(-cA / cD, 0.1, 0.9);
+    }
+
+    private static double ArrowApexX(double t, double x0, double cx, double x2)
+    {
+        double u = 1 - t;
+        return u * u * x0 + 2 * t * u * cx + t * t * x2;
+    }
+
+    private static double ArrowApexY(double t, double y0, double cy, double y2)
+    {
+        double u = 1 - t;
+        return u * u * y0 + 2 * t * u * cy + t * t * y2;
+    }
+
     private static AnnotHandle? HitTestHandle(List<AnnotHandle> handles, Point rel, double tol = 8)
     {
         AnnotHandle? best = null;
         double bestD = tol;
         foreach (var h in handles)
         {
+            // 弧顶控制点在曲线正中部：按箭头中部应拖动整体，只有精确按中小方块才变形 → 命中区 4px
+            double htol = (h.Kind == HandleKind.ArrowPt && h.Index == 1) ? 4 : tol;
             double dx = h.Pos.X - rel.X, dy = h.Pos.Y - rel.Y;
             double d = Math.Sqrt(dx * dx + dy * dy);
-            if (d <= bestD) { bestD = d; best = h; }
+            if (d <= htol && d <= bestD) { bestD = d; best = h; }
         }
         return best;
     }
@@ -1238,47 +1450,51 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         {
             case HandleKind.Corner:
             {
-                // 文字 / 序号：角点缩放 = 按包围盒比例调整字号（粗细）
+                // 文字 / 序号：角点缩放 = 以中心为基准按包围盒比例调整字号（粗细）
                 if (a.Tool is AnnotationTool.Text or AnnotationTool.Number)
                 {
                     var bb = GetAnnotBounds(a);
-                    double ax2, ay2;
-                    switch (h.Index)
-                    {
-                        case 0: ax2 = bb.Right; ay2 = bb.Bottom; break;
-                        case 1: ax2 = bb.Left;  ay2 = bb.Bottom; break;
-                        case 2: ax2 = bb.Right; ay2 = bb.Top;    break;
-                        default: ax2 = bb.Left; ay2 = bb.Top;    break;
-                    }
-                    double nw = Math.Max(4, Math.Abs(rel.X - ax2));
-                    double nh = Math.Max(4, Math.Abs(rel.Y - ay2));
+                    double bxc = bb.Left + bb.Width / 2, byc = bb.Top + bb.Height / 2;
+                    double nw = Math.Max(4, Math.Abs(rel.X - bxc) * 2);
+                    double nh = Math.Max(4, Math.Abs(rel.Y - byc) * 2);
                     double s = Math.Max(nw / Math.Max(1, bb.Width), nh / Math.Max(1, bb.Height));
                     return MakeAnnot(a, thickness: Math.Clamp(a.Thickness * s, 2, 40));
                 }
 
+                // 锚定对角的标准拉伸：拖 A 角 → 对角固定，A 移动，邻角跟随（防止翻转，最小尺寸 6）
                 double x = a.X, y = a.Y, w = a.W, hh = a.H;
-                double ax, ay;
+                double right = x + w, bottom = y + hh;
                 switch (h.Index)
                 {
-                    case 0: ax = x + w; ay = y + hh; break;
-                    case 1: ax = x;     ay = y + hh; break;
-                    case 2: ax = x + w; ay = y;     break;
-                    default: ax = x;    ay = y;     break;
+                    case 0: // 左上，锚右下
+                        x = Math.Min(rel.X, right - 6); y = Math.Min(rel.Y, bottom - 6);
+                        w = right - x; hh = bottom - y;
+                        break;
+                    case 1: // 右上，锚左下
+                        y = Math.Min(rel.Y, bottom - 6);
+                        w = Math.Max(rel.X - x, 6); hh = bottom - y;
+                        break;
+                    case 2: // 左下，锚右上
+                        x = Math.Min(rel.X, right - 6);
+                        w = right - x; hh = Math.Max(rel.Y - y, 6);
+                        break;
+                    default: // 右下，锚左上
+                        w = Math.Max(rel.X - x, 6); hh = Math.Max(rel.Y - y, 6);
+                        break;
                 }
-                double nx = Math.Min(rel.X, ax), ny = Math.Min(rel.Y, ay);
-                double nw2 = Math.Max(3, Math.Abs(rel.X - ax));
-                double nh2 = Math.Max(3, Math.Abs(rel.Y - ay));
-                return MakeAnnot(a, x: nx, y: ny, w: nw2, h: nh2);
+                return MakeAnnot(a, x: x, y: y, w: w, h: hh);
             }
             case HandleKind.Edge:
             {
+                // 锚定对边：拖上边 → 下边固定只动上边；拖右边 → 左边固定只动右边（防止翻转，最小尺寸 6）
                 double x = a.X, y = a.Y, w = a.W, hh = a.H;
+                double right = x + w, bottom = y + hh;
                 switch (h.Index)
                 {
-                    case 0: y = Math.Min(rel.Y, y + hh - 3); hh = (a.Y + a.H) - y; break;
-                    case 1: w = Math.Max(3, rel.X - x); break;
-                    case 2: hh = Math.Max(3, rel.Y - y); break;
-                    default: x = Math.Min(rel.X, a.X + a.W - 3); w = (a.X + a.W) - x; break;
+                    case 0: y = Math.Min(rel.Y, bottom - 6); hh = bottom - y; break;        // 上边，锚下边
+                    case 1: w = Math.Max(rel.X - x, 6); break;                              // 右边，锚左边
+                    case 2: hh = Math.Max(rel.Y - y, 6); break;                             // 下边，锚上边
+                    default: x = Math.Min(rel.X, right - 6); w = right - x; break;          // 左边，锚右边
                 }
                 return MakeAnnot(a, x: x, y: y, w: w, h: hh);
             }
@@ -1303,8 +1519,36 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
                 if (a.Points is not { Length: >= 6 }) return null;
                 {
                     var pts = (double[])a.Points.Clone();
-                    pts[h.Index * 2] = rel.X;
-                    pts[h.Index * 2 + 1] = rel.Y;
+                    if (h.Index == 1)
+                    {
+                        // 拖动中点 → 用锁定参数 t 反解控制点 C = (Q - (1-t)²P0 - t²P2) / (2t(1-t))，保证 B(t)=鼠标
+                        double hsh = Math.Max(8, Math.Max(1, a.Thickness) * 4);
+                        double dxh = a.Points[4] - a.Points[2], dyh = a.Points[5] - a.Points[3];
+                        double dlh = Math.Sqrt(dxh * dxh + dyh * dyh);
+                        double hrxx = dlh > 1e-6 ? a.Points[4] - dxh / dlh * hsh : a.Points[4];
+                        double hryy = dlh > 1e-6 ? a.Points[5] - dyh / dlh * hsh : a.Points[5];
+                        double t = _arrowDragT;
+                        double k = 2 * t * (1 - t);
+                        if (Math.Abs(k) < 1e-6) { pts[2] = 2 * rel.X - (pts[0] + pts[4]) / 2; pts[3] = 2 * rel.Y - (pts[1] + pts[5]) / 2; }
+                        else
+                        {
+                            double u = 1 - t;
+                            // 两步反解：先用尖点 P2 粗解出 C → 由其头部根部 hrx 精化一次 → B(t)=鼠标（<1px）
+                            double cx1 = (rel.X - u * u * pts[0] - t * t * pts[4]) / k;
+                            double cy1 = (rel.Y - u * u * pts[1] - t * t * pts[5]) / k;
+                            double dxh2 = pts[4] - cx1, dyh2 = pts[5] - cy1;
+                            double dlh2 = Math.Sqrt(dxh2 * dxh2 + dyh2 * dyh2);
+                            double hrx2 = dlh2 > 1e-6 ? pts[4] - dxh2 / dlh2 * hsh : pts[4];
+                            double hry2 = dlh2 > 1e-6 ? pts[5] - dyh2 / dlh2 * hsh : pts[5];
+                            pts[2] = (rel.X - u * u * pts[0] - t * t * hrx2) / k;
+                            pts[3] = (rel.Y - u * u * pts[1] - t * t * hry2) / k;
+                        }
+                    }
+                    else
+                    {
+                        pts[h.Index * 2] = rel.X;
+                        pts[h.Index * 2 + 1] = rel.Y;
+                    }
                     return MakeAnnot(a, points: pts);
                 }
             case HandleKind.Move:
@@ -1321,6 +1565,7 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
     /// <summary>重建标注预览层：已固化标注（各自颜色/粗细）+ 进行中绘制 + 选中框 + 控制点。</summary>
     private void RefreshAnnotationLayer()
     {
+        System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
         _annotLayer.Children.Clear();
         _floatLayer.Children.Clear();
         double dip = _scale;
@@ -1352,26 +1597,24 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
                 case AnnotationTool.Rect:
                 case AnnotationTool.Mosaic:
                 {
-                    double x = Math.Min(_annotStart.X, _annotLast.X) * dip;
-                    double y = Math.Min(_annotStart.Y, _annotLast.Y) * dip;
-                    double w = Math.Abs(_annotLast.X - _annotStart.X) * dip;
-                    double h = Math.Abs(_annotLast.Y - _annotStart.Y) * dip;
-                    var r = new Rectangle { Width = w, Height = h, Stroke = brush, StrokeThickness = stroke };
+                    double x0 = Math.Min(_annotStart.X, _annotLast.X), y0 = Math.Min(_annotStart.Y, _annotLast.Y);
+                    double w0 = Math.Abs(_annotLast.X - _annotStart.X), h0 = Math.Abs(_annotLast.Y - _annotStart.Y);
+                    double th = stroke / dip;
+                    var r = new Rectangle { Width = Math.Max(1, (w0 + th) * dip), Height = Math.Max(1, (h0 + th) * dip), Stroke = brush, StrokeThickness = stroke };
                     if (_annotDashed) r.StrokeDashArray = new DoubleCollection { 4, 3 };
                     if (tool == AnnotationTool.Mosaic) r.Fill = new SolidColorBrush(Color.FromArgb(0x33, 0, 0, 0));
-                    Canvas.SetLeft(r, x); Canvas.SetTop(r, y);
+                    Canvas.SetLeft(r, (x0 - th / 2) * dip); Canvas.SetTop(r, (y0 - th / 2) * dip);
                     _annotLayer.Children.Add(r);
                     break;
                 }
                 case AnnotationTool.Ellipse:
                 {
-                    double x = Math.Min(_annotStart.X, _annotLast.X) * dip;
-                    double y = Math.Min(_annotStart.Y, _annotLast.Y) * dip;
-                    double w = Math.Abs(_annotLast.X - _annotStart.X) * dip;
-                    double h = Math.Abs(_annotLast.Y - _annotStart.Y) * dip;
-                    var el = new Ellipse { Width = w, Height = h, Stroke = brush, StrokeThickness = stroke };
+                    double x0 = Math.Min(_annotStart.X, _annotLast.X), y0 = Math.Min(_annotStart.Y, _annotLast.Y);
+                    double w0 = Math.Abs(_annotLast.X - _annotStart.X), h0 = Math.Abs(_annotLast.Y - _annotStart.Y);
+                    double th = stroke / dip;
+                    var el = new Ellipse { Width = Math.Max(1, (w0 + th) * dip), Height = Math.Max(1, (h0 + th) * dip), Stroke = brush, StrokeThickness = stroke };
                     if (_annotDashed) el.StrokeDashArray = new DoubleCollection { 4, 3 };
-                    Canvas.SetLeft(el, x); Canvas.SetTop(el, y);
+                    Canvas.SetLeft(el, (x0 - th / 2) * dip); Canvas.SetTop(el, (y0 - th / 2) * dip);
                     _annotLayer.Children.Add(el);
                     break;
                 }
@@ -1403,27 +1646,34 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
             }
         }
 
-        // 选中框 + 控制点
-        if (_selectedIndex is { } sel && sel >= 0 && sel < _annotations.Count)
+        // 选中框 + 控制点（拖动中隐藏：只画标注本体，保证跟手；松手后恢复）
+        if (!_dragLive && _selectedIndex is { } sel && sel >= 0 && sel < _annotations.Count)
         {
             var b = GetAnnotBounds(_annotations[sel]);
-            var selRect = new Rectangle
+            // 箭头 / 椭圆 / 矩形 / 画笔：只显示控制点，不画矩形外框
+            bool noFrame = _annotations[sel].Tool is AnnotationTool.Arrow or AnnotationTool.Ellipse or AnnotationTool.Rect or AnnotationTool.Pen;
+            if (!noFrame)
             {
-                Width = Math.Max(1, b.Width * dip),
-                Height = Math.Max(1, b.Height * dip),
-                Stroke = new SolidColorBrush(Color.FromRgb(0x3B, 0x82, 0xF6)),
-                StrokeThickness = 2.5,
-                StrokeDashArray = new DoubleCollection { 5, 3 },
-                Fill = Brushes.Transparent,
-            };
-            Canvas.SetLeft(selRect, b.X * dip);
-            Canvas.SetTop(selRect, b.Y * dip);
-            _annotLayer.Children.Add(selRect);
+                var selRect = new Rectangle
+                {
+                    Width = Math.Max(1, b.Width * dip),
+                    Height = Math.Max(1, b.Height * dip),
+                    Stroke = new SolidColorBrush(Color.FromRgb(0x3B, 0x82, 0xF6)),
+                    StrokeThickness = 2.5,
+                    StrokeDashArray = new DoubleCollection { 5, 3 },
+                    Fill = Brushes.Transparent,
+                };
+                Canvas.SetLeft(selRect, b.X * dip);
+                Canvas.SetTop(selRect, b.Y * dip);
+                _annotLayer.Children.Add(selRect);
+            }
 
             // 控制点：角/边/箭头=白方块，圆角=白圆点
             foreach (var h in GetHandles(_annotations[sel]))
             {
                 var pos = h.Pos;
+                if (_arrowLivePt is { } lp && h.Kind == HandleKind.ArrowPt && h.Index == 1)
+                    pos = lp;   // 拖动中箭头中点控制点跟手显示
                 if (h.Kind == HandleKind.Round)
                 {
                     var dot = new Ellipse
@@ -1449,11 +1699,29 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
                     Canvas.SetLeft(hb, pos.X * dip - 3.5);
                     Canvas.SetTop(hb, pos.Y * dip - 3.5);
                     _annotLayer.Children.Add(hb);
+                    // [DEBUG] 控制点坐标标注（箭头附"距可见曲线距离"，d≈0 即精确骑线）；拖动中隐藏保证跟手
+                    string dbgTxt = "";
+                    if (!_dragLive)
+                    {
+                        dbgTxt = $"({pos.X:0},{pos.Y:0})";
+                        if (h.Kind == HandleKind.ArrowPt && _annotations[sel].Tool == AnnotationTool.Arrow)
+                            dbgTxt += $" d{ArrowHandleCurveDist(_annotations[sel], h):0.#}";
+                    }
+                    var dbg = new System.Windows.Controls.TextBlock
+                    {
+                        Text = dbgTxt,
+                        FontSize = 10,
+                        Foreground = new SolidColorBrush(Color.FromRgb(0x00, 0xE5, 0xC0)),
+                    };
+                    Canvas.SetLeft(dbg, pos.X * dip + 5);
+                    Canvas.SetTop(dbg, pos.Y * dip - 12);
+                    _annotLayer.Children.Add(dbg);
                 }
             }
         }
 
         UpdateFloatBar();
+        _lastRefreshMs = sw.Elapsed.TotalMilliseconds;
     }
 
     /// <summary>已固化标注的预览绘制（每个标注用自身颜色/粗细）。坐标为 DIP。</summary>
@@ -1466,7 +1734,9 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
             {
                 if (a.CornerRadius > 0.5)
                 {
-                    var geo = RoundRectGeometryDip(a.X * dip, a.Y * dip, a.W * dip, a.H * dip, a.CornerRadius * dip);
+                    // WPF 闭合形状控件为外描边（描边中心=几何+t/2）；外扩 t/2 使描边中心=几何边界（=控制点=最终渲染）
+                    double th = stroke / dip;
+                    var geo = RoundRectGeometryDip((a.X - th / 2) * dip, (a.Y - th / 2) * dip, (a.W + th) * dip, (a.H + th) * dip, (a.CornerRadius + th / 2) * dip);
                     var p = new Path { Data = geo, Stroke = brush, StrokeThickness = stroke };
                     if (a.Dashed) p.StrokeDashArray = new DoubleCollection { 4, 3 };
                     if (a.Tool == AnnotationTool.Mosaic) p.Fill = new SolidColorBrush(Color.FromArgb(0x33, 0, 0, 0));
@@ -1474,25 +1744,27 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
                 }
                 else
                 {
+                    double th = stroke / dip;
                     var r = new Rectangle
                     {
-                        Width = a.W * dip, Height = a.H * dip,
+                        Width = Math.Max(1, (a.W + th) * dip), Height = Math.Max(1, (a.H + th) * dip),
                         Stroke = brush, StrokeThickness = stroke,
                         Fill = a.Tool == AnnotationTool.Mosaic
                             ? new SolidColorBrush(Color.FromArgb(0x33, 0, 0, 0))
                             : null,
                     };
                     if (a.Dashed) r.StrokeDashArray = new DoubleCollection { 4, 3 };
-                    Canvas.SetLeft(r, a.X * dip); Canvas.SetTop(r, a.Y * dip);
+                    Canvas.SetLeft(r, (a.X - th / 2) * dip); Canvas.SetTop(r, (a.Y - th / 2) * dip);
                     _annotLayer.Children.Add(r);
                 }
                 break;
             }
             case AnnotationTool.Ellipse:
             {
-                var el = new Ellipse { Width = a.W * dip, Height = a.H * dip, Stroke = brush, StrokeThickness = stroke };
+                double thc = stroke / dip;
+                var el = new Ellipse { Width = Math.Max(1, (a.W + thc) * dip), Height = Math.Max(1, (a.H + thc) * dip), Stroke = brush, StrokeThickness = stroke };
                 if (a.Dashed) el.StrokeDashArray = new DoubleCollection { 4, 3 };
-                Canvas.SetLeft(el, a.X * dip); Canvas.SetTop(el, a.Y * dip);
+                Canvas.SetLeft(el, (a.X - thc / 2) * dip); Canvas.SetTop(el, (a.Y - thc / 2) * dip);
                 _annotLayer.Children.Add(el);
                 break;
             }
@@ -1834,6 +2106,10 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         _annotations.Clear();
         _selectedIndex = null;
         _annotTool = null;
+        _dragLive = false;
+        _activeHandle = null;
+        _draggingAnnot = false;
+        _arrowLivePt = null;
         _annotLayer.Children.Clear();
         _floatLayer.Children.Clear();
         _toolbarHost.Visibility = Visibility.Collapsed;

@@ -178,6 +178,16 @@ public partial class App : Application
                 return Win32.CallNextHookEx(_escHook, nCode, wParam, lParam);
             }
 
+            // 空格：鼠标悬停贴图进入标注模式（显示标注工具条），不修饰键组合
+            if (vk == 0x20 && !Win32.IsKeyDown(Win32.VK_SHIFT) && !Win32.IsKeyDown(Win32.VK_CONTROL) && !Win32.IsKeyDown(Win32.VK_MENU))
+            {
+                if (_capture is not null && _capture.IsLoaded && _capture.IsVisible)
+                    return Win32.CallNextHookEx(_escHook, nCode, wParam, lParam);
+                if (_stickers.TryAnnotateUnderCursor())
+                    return new IntPtr(1);
+                return Win32.CallNextHookEx(_escHook, nCode, wParam, lParam);
+            }
+
             // Ctrl+Z：撤销鼠标悬停贴图的标注上一步（仅标注模式）
             if (vk == (int)'Z' && Win32.IsKeyDown(Win32.VK_CONTROL))
             {

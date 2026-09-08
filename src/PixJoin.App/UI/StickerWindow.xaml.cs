@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
@@ -874,9 +874,11 @@ public sealed partial class StickerWindow : Window
                         : a.Tool == AnnotationTool.Mosaic ? new SolidColorBrush(Color.FromArgb(0x33, 0x00, 0x00, 0x00))
                         : null;
                 fill?.Freeze();
-                var r = new Rectangle { Width = a.W * sx, Height = a.H * sy, Stroke = a.Tool == AnnotationTool.Rect ? brush : null, Fill = fill };
-                Canvas.SetLeft(r, a.X * sx);
-                Canvas.SetTop(r, a.Y * sy);
+                // WPF 闭合控件外描边：外扩 t/2 使描边中心回到几何边界，与最终渲染一致
+                double th2 = a.Tool == AnnotationTool.Rect ? a.Thickness / 2 : 0;
+                var r = new Rectangle { Width = Math.Max(1, (a.W + th2 * 2) * sx), Height = Math.Max(1, (a.H + th2 * 2) * sy), Stroke = a.Tool == AnnotationTool.Rect ? brush : null, Fill = fill };
+                Canvas.SetLeft(r, (a.X - th2) * sx);
+                Canvas.SetTop(r, (a.Y - th2) * sy);
                 AnnotationLayer.Children.Add(r);
                 break;
             }

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -357,6 +357,20 @@ public sealed class StickerManager
         "鼠标悬停在贴图上时，按 ESC 将关闭该贴图。\n\n是否保持启用此功能？\n（选择“是”：保持启用，以后不再提示；选择“否”：禁用）",
         s => s.EscClosePrompted, s => s.EscClosePrompted = true,
         s => s.EscCloseEnabled, (s, v) => s.EscCloseEnabled = v);
+
+    /// <summary>鼠标坐标命中的贴图：空格进入标注模式（显示工具条），返回是否已拦截空格。</summary>
+    public bool TryAnnotateUnderCursor()
+    {
+        Win32.GetPhysicalCursorPos(out var p);
+        foreach (var w in _windows.Values)
+        {
+            if (w.Handle == IntPtr.Zero || !Win32.GetWindowRect(w.Handle, out var r)) continue;
+            if (p.X < r.Left || p.X >= r.Right || p.Y < r.Top || p.Y >= r.Bottom) continue;
+            w.EnterAnnotationMode();
+            return true;
+        }
+        return false;
+    }
 
     /// <summary>鼠标坐标命中的贴图：按「ESC 关闭」语义处理（含首次提示），返回是否已拦截 ESC。</summary>
     public bool TryCloseUnderCursor()
