@@ -192,6 +192,22 @@ public sealed class StickerManager
         SetTextOrWarn(OcrSelection.BuildText(words, 0, words.Count - 1));
     }
 
+    /// <summary>复制整张贴图识别内容为表格（CSV，按行/列聚类）。</summary>
+    public void CopyOcrTable(StickerWindow window)
+    {
+        var words = window.Sticker.OcrWords;
+        if (words is null || words.Count == 0) return;
+        SetTextOrWarn(OcrTableBuilder.BuildCsv(words));
+    }
+
+    /// <summary>复制整张贴图识别内容为 Markdown 表格。</summary>
+    public void CopyOcrMarkdownTable(StickerWindow window)
+    {
+        var words = window.Sticker.OcrWords;
+        if (words is null || words.Count == 0) return;
+        SetTextOrWarn(OcrTableBuilder.BuildMarkdown(words));
+    }
+
     /// <summary>复制选中的一段文字（词索引范围，文档顺序）。</summary>
     public void CopyOcrSelection(StickerWindow window, int start, int end)
     {

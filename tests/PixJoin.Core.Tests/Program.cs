@@ -1,4 +1,4 @@
-using PixJoin.Core.Tests;
+﻿using PixJoin.Core.Tests;
 
 internal static class Program
 {
@@ -18,6 +18,7 @@ internal static class Program
         ImageProcessorTests.Run();
         AnnotationRendererTests.Run();
         AnnotationPainterTests.Run();
+        OcrTableBuilderTests.Run();
 
         Console.WriteLine("\n=====================================");
         Console.WriteLine($"通过 {Check.Passed} 项，失败 {Check.Failures.Count} 项");

@@ -765,6 +765,14 @@ public sealed partial class StickerWindow : Window
         copyAllText.Click += (_, _) => _owner.CopyAllOcrText(this);
         menu.Items.Add(copyAllText);
 
+        var copyTable = new MenuItem { Header = "复制为表格（CSV）", IsEnabled = hasOcr };
+        copyTable.Click += (_, _) => _owner.CopyOcrTable(this);
+        menu.Items.Add(copyTable);
+
+        var copyMdTable = new MenuItem { Header = "复制为 Markdown 表格", IsEnabled = hasOcr };
+        copyMdTable.Click += (_, _) => _owner.CopyOcrMarkdownTable(this);
+        menu.Items.Add(copyMdTable);
+
         var textSelect = new MenuItem { Header = "文本可选择", IsChecked = _textSelectable };
         textSelect.Click += (_, _) =>
         {
