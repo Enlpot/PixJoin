@@ -1134,12 +1134,12 @@ public CaptureOverlay(ScreenShot shot, Core.Services.AppSettings? settings = nul
         _toolbar.Children.Add(tools);
 
         _toolbar.Children.Add(MakeSeparator(scale));
-        _toolbar.Children.Add(MakeActionButton("翻译", CaptureAction.Translate, scale));
-        _toolbar.Children.Add(MakeActionButton("长截图", CaptureAction.ScrollCapture, scale));
-        _toolbar.Children.Add(MakeActionButton("贴图", CaptureAction.Pin, scale, primary: true));
-        _toolbar.Children.Add(MakeActionButton("复制", CaptureAction.Copy, scale));
-        _toolbar.Children.Add(MakeActionButton("保存", CaptureAction.Save, scale));
-        _toolbar.Children.Add(MakeActionButton("标注", CaptureAction.Annotate, scale));
+        _toolbar.Children.Add(MakeActionButton("🌐", "翻译", CaptureAction.Translate, scale));
+        _toolbar.Children.Add(MakeActionButton("⇕", "长截图", CaptureAction.ScrollCapture, scale));
+        _toolbar.Children.Add(MakeActionButton("📌", "贴图", CaptureAction.Pin, scale, primary: true));
+        _toolbar.Children.Add(MakeActionButton("📋", "复制", CaptureAction.Copy, scale));
+        _toolbar.Children.Add(MakeActionButton("💾", "保存", CaptureAction.Save, scale));
+        _toolbar.Children.Add(MakeActionButton("✏️", "标注", CaptureAction.Annotate, scale));
         _toolbar.Children.Add(MakeCloseButton(scale));
 
         _toolbarHost.Visibility = Visibility.Visible;
@@ -1293,14 +1293,15 @@ public CaptureOverlay(ScreenShot shot, Core.Services.AppSettings? settings = nul
         RefreshAnnotationLayer();
     }
 
-    private Button MakeActionButton(string text, CaptureAction action, double scale, bool primary = false)
+    private Button MakeActionButton(string glyph, string tip, CaptureAction action, double scale, bool primary = false)
     {
         var b = new Button
         {
-            Content = text,
+            Content = glyph,
+            ToolTip = tip,
             Margin = new Thickness(3, 0, 3, 0),
-            Padding = new Thickness(8 * scale, 5 * scale, 8 * scale, 5 * scale),
-            FontSize = 12 * scale,
+            Padding = new Thickness(9 * scale, 4 * scale, 9 * scale, 4 * scale),
+            FontSize = 15 * scale,
             Foreground = Brushes.White,
             Background = primary
                 ? new SolidColorBrush(Color.FromRgb(0x00, 0x8C, 0x7A))
