@@ -74,6 +74,15 @@ public partial class SettingsWindow : Window
         ChkWheel.IsChecked = s.WheelZoomEnabled;
         ChkEsc.IsChecked = s.EscCloseEnabled;
         ChkOcr.IsChecked = s.OcrEnabled;
+
+        CmbOcrLang.Items.Clear();
+        CmbOcrLang.Items.Add(new ComboBoxItem { Content = "中文", Tag = "ch" });
+        CmbOcrLang.Items.Add(new ComboBoxItem { Content = "英文", Tag = "en" });
+        CmbOcrLang.Items.Add(new ComboBoxItem { Content = "日文", Tag = "japan" });
+        CmbOcrLang.Items.Add(new ComboBoxItem { Content = "韩文", Tag = "korean" });
+        CmbOcrLang.Items.Add(new ComboBoxItem { Content = "繁体中文", Tag = "chinese_cht" });
+        CmbOcrLang.SelectedIndex = Math.Max(0, CmbOcrLang.Items.OfType<ComboBoxItem>()
+            .ToList().FindIndex(i => (i.Tag as string) == s.OcrLanguage));
         ChkTransparent.IsChecked = s.TransparentBackground;
         ChkTrim.IsChecked = s.AutoTrim;
         ChkAutoStart.IsChecked = s.StartWithWindows;
@@ -150,6 +159,12 @@ public partial class SettingsWindow : Window
 
     // ---------------- 保存 / 取消 ----------------
 
+    private void OnOcrLangChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // 语言切换即时生效（贴图 OCR 走新语言）；保存时写入配置
+        _onApplied?.Invoke();
+    }
+
     private void OnSave(object sender, RoutedEventArgs e)
     {
         if (_capturingHotkey) return;   // 仍在捕获中，先完成或取消
@@ -172,6 +187,7 @@ public partial class SettingsWindow : Window
         s.WheelZoomEnabled = ChkWheel.IsChecked == true;
         s.EscCloseEnabled = ChkEsc.IsChecked == true;
         s.OcrEnabled = ChkOcr.IsChecked == true;
+        s.OcrLanguage = (CmbOcrLang.SelectedItem as ComboBoxItem)?.Tag as string ?? "ch";
         s.TransparentBackground = ChkTransparent.IsChecked == true;
         s.AutoTrim = ChkTrim.IsChecked == true;
         s.StartWithWindows = ChkAutoStart.IsChecked == true;

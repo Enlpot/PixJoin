@@ -24,7 +24,7 @@ public sealed class StickerManager
     private readonly GroupManager _groups = new();
     private readonly Dictionary<string, StickerWindow> _windows = new(StringComparer.Ordinal);
     private readonly SettingsService _settings;
-    private readonly IOcrEngine? _ocr;
+    private IOcrEngine? _ocr;
     private GuideLayer _guideLayer;
     private DragSession? _drag;
     private bool _shuttingDown;
@@ -53,6 +53,13 @@ public sealed class StickerManager
 
     /// <summary>全局 OCR 开关 + 引擎可用（缺语言包时自动禁用）。</summary>
     public bool OcrEnabled => _settings.Current.OcrEnabled && (_ocr?.IsAvailable ?? false);
+
+    /// <summary>OCR 识别语言切换（PixPin 式多语言）：重建组合引擎，下一次贴图识别生效。</summary>
+    public void SetOcrLanguage(string language)
+    {
+        if (_ocr is CompositeOcrEngine comp) comp.SetPrimaryLanguage(language);
+        else _ocr = new CompositeOcrEngine(new RapidOcrEngine(language: language), new WindowsOcrEngine());
+    }
 
     public bool HasHiddenStickers => _hiddenExcept is not null;
 

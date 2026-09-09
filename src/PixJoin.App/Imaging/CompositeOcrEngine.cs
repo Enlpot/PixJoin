@@ -20,6 +20,12 @@ public sealed class CompositeOcrEngine : IOcrEngine
         _fallback = fallback;
     }
 
+    /// <summary>切换主引擎语言（RapidOcrEngine 多语言；非 Rapid 引擎忽略）。</summary>
+    public void SetPrimaryLanguage(string language)
+    {
+        if (_primary is RapidOcrEngine rapid) rapid.SetLanguage(language);
+    }
+
     /// <summary>任一引擎可用即可工作。</summary>
     public bool IsAvailable => _primary.IsAvailable || _fallback.IsAvailable;
 

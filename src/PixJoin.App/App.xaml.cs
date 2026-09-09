@@ -250,6 +250,7 @@ public partial class App : Application
         {
             ReRegisterCaptureHotKey();
             ReRegisterPinHotKey();
+            _stickers.SetOcrLanguage(_settings.Current.OcrLanguage);
             ApplyAutoStart(_settings.Current.StartWithWindows);
             _trayIcon!.Text = $"PixJoin —— 截图 / 贴图 / 吸附组合   [{_settings.Current.HotkeyDisplay}]";
             if (_trayCaptureItem is not null)

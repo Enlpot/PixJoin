@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -21,14 +21,27 @@ namespace PixJoin.App.Imaging;
 /// </summary>
 public sealed class RapidOcrEngine : IOcrEngine
 {
-    private readonly RapidOcrModelStore _models;
+    private RapidOcrModelStore _models;
     private readonly object _initLock = new();
     private RapidOcr? _ocr;
     private bool _initFailed;
 
-    public RapidOcrEngine(RapidOcrModelStore? models = null)
+    public RapidOcrEngine(RapidOcrModelStore? models = null, string language = "ch")
     {
-        _models = models ?? new RapidOcrModelStore();
+        _models = models ?? new RapidOcrModelStore(language: language);
+    }
+
+    /// <summary>切换识别语言：重建模型存储并清空已初始化引擎（下次识别时按新语言加载）。</summary>
+    public bool SetLanguage(string language)
+    {
+        if (_models.Language == language) return true;
+        _models = new RapidOcrModelStore(language: language);
+        lock (_initLock)
+        {
+            _ocr = null;
+            _initFailed = false;
+        }
+        return true;
     }
 
     public bool IsAvailable

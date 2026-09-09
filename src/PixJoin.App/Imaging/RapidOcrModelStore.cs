@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -9,32 +9,57 @@ using System.Threading.Tasks;
 namespace PixJoin.App.Imaging;
 
 /// <summary>
-/// PP-OCRv4 中文模型管理：检测 / 下载 / 状态。
-/// NuGet 自带 PP-OCRv5 latin 模型（det/cls 通用），中文识别需 v4 ch rec + dict；
-/// det 换用 v4 mobile（与 rec 同一官方组合，参数用 PythonCompat 预设）。
-/// 模型缺失时后台静默下载（modelscope 官方源），下载完成前由调用方走兜底引擎。
+/// PP-OCRv4 多语言模型管理：检测 / 下载 / 状态。
+/// det/cls 各语言通用（ch PP-OCRv4 det + PP-LCNet cls），rec + dict 按语言切换
+/// （ch / en / japan / korean / chinese_cht，模型源 modelscope 官方 RapidOCR 仓库）。
+/// 模型缺失时后台静默下载，下载完成前由调用方走兜底引擎。
 /// </summary>
 public sealed class RapidOcrModelStore
 {
+    private static readonly Dictionary<string, (string Rec, string Dict)> Languages = new(StringComparer.Ordinal)
+    {
+        ["ch"] = ("ch_PP-OCRv4_rec_mobile.onnx", "ppocr_keys_v1.txt"),
+        ["en"] = ("en_PP-OCRv4_rec_mobile.onnx", "en_dict.txt"),
+        ["japan"] = ("japan_PP-OCRv4_rec_mobile.onnx", "japan_dict.txt"),
+        ["korean"] = ("korean_PP-OCRv4_rec_mobile.onnx", "korean_dict.txt"),
+        ["chinese_cht"] = ("chinese_cht_PP-OCRv4_rec_mobile.onnx", "chinese_cht_dict.txt"),
+    };
+
+    private const string RecOnnxBase = "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/rec/";
+    private const string DictBase = "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/paddle/PP-OCRv4/rec/";
+
     /// <summary>模型所在目录（exe 旁 models\v4）。</summary>
     public string ModelDir { get; }
 
+    public string Language { get; }
+
     public string DetPath => Path.Combine(ModelDir, "ch_PP-OCRv4_det_mobile.onnx");
     public string ClsPath => Path.Combine(ModelDir, "ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx");
-    public string RecPath => Path.Combine(ModelDir, "ch_PP-OCRv4_rec_mobile.onnx");
-    public string KeysPath => Path.Combine(ModelDir, "ppocr_keys_v1.txt");
+    public string RecPath => Path.Combine(ModelDir, Languages.TryGetValue(Language, out var f) ? f.Rec : Languages["ch"].Rec);
+    public string KeysPath => Path.Combine(ModelDir, Languages.TryGetValue(Language, out var f) ? f.Dict : Languages["ch"].Dict);
 
-    private static readonly (string FileName, string Url)[] Sources =
+    private List<(string FileName, string Url)> BuildSources()
     {
-        ("ch_PP-OCRv4_det_mobile.onnx",
-         "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_mobile.onnx"),
-        ("ch_PP-OCRv4_rec_mobile.onnx",
-         "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/rec/ch_PP-OCRv4_rec_mobile.onnx"),
-        ("ppocr_keys_v1.txt",
-         "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/paddle/PP-OCRv4/rec/ch_PP-OCRv4_rec_mobile/ppocr_keys_v1.txt"),
-    };
+        var (rec, dict) = Languages.TryGetValue(Language, out var f) ? f : Languages["ch"];
+        var list = new List<(string, string)>
+        {
+            ("ch_PP-OCRv4_det_mobile.onnx",
+             "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_mobile.onnx"),
+            (rec, RecOnnxBase + rec),
+        };
+        if (Language == "ch")
+        {
+            // 中文 dict 文件名为 ppocr_keys_v1.txt，目录与其他语言一致
+            list.Add((dict, DictBase + "ch_PP-OCRv4_rec_mobile/" + dict));
+        }
+        else
+        {
+            list.Add((dict, DictBase + Language + "_PP-OCRv4_rec_mobile/" + dict));
+        }
+        return list;
+    }
 
-    /// <summary>v5 latin 包自带 cls（与 v4 通用）；latin rec/det 不用。</summary>
+    /// <summary>v5 latin 包自带 cls（与 v4 通用）。</summary>
     private readonly string _bundledCls;
 
     private readonly object _lock = new();
@@ -42,9 +67,10 @@ public sealed class RapidOcrModelStore
     private bool _downloadFailed;
     private DateTime _lastFailAt;
 
-    public RapidOcrModelStore(string? modelDir = null)
+    public RapidOcrModelStore(string? modelDir = null, string language = "ch")
     {
         ModelDir = modelDir ?? Path.Combine(AppContext.BaseDirectory, "models", "v4");
+        Language = Languages.ContainsKey(language) ? language : "ch";
         _bundledCls = Path.Combine(AppContext.BaseDirectory, "models", "v5",
             "ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx");
     }
@@ -77,8 +103,8 @@ public sealed class RapidOcrModelStore
     {
         get
         {
-            if (IsDownloading) return "中文模型下载中…";
-            if (_downloadFailed) return "中文模型下载失败";
+            if (IsDownloading) return "模型下载中…";
+            if (_downloadFailed) return "模型下载失败";
             return IsReady ? "高精度模型就绪" : "等待下载";
         }
     }
@@ -106,7 +132,7 @@ public sealed class RapidOcrModelStore
             using var client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(10);
 
-            foreach (var (file, url) in Sources)
+            foreach (var (file, url) in BuildSources())
             {
                 var dest = Path.Combine(ModelDir, file);
                 if (File.Exists(dest) && new FileInfo(dest).Length > 1024) continue;

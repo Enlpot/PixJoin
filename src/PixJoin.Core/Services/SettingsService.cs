@@ -63,6 +63,9 @@ public sealed class AppSettings
     /// <summary>贴图自动 OCR 文字识别（悬停文字显示 IBeam、可拖选复制）。</summary>
     public bool OcrEnabled { get; set; } = true;
 
+    /// <summary>OCR 识别语言：ch / en / japan / korean / chinese_cht。</summary>
+    public string OcrLanguage { get; set; } = "ch";
+
     // ---- 导出 ----
     public bool TransparentBackground { get; set; } = true;
 
