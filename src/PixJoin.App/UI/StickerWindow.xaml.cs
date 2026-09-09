@@ -733,6 +733,14 @@ public sealed partial class StickerWindow : Window
         save.Click += (_, _) => _owner.SaveStickerOrGroup(this);
         menu.Items.Add(save);
 
+        var copyAsFile = new MenuItem { Header = "复制为文件", IsEnabled = !Sticker.IsLocked };
+        copyAsFile.Click += (_, _) => _owner.CopyStickerAsFile(this);
+        menu.Items.Add(copyAsFile);
+
+        var openExt = new MenuItem { Header = "用默认程序打开" };
+        openExt.Click += (_, _) => _owner.OpenStickerExternally(this);
+        menu.Items.Add(openExt);
+
         menu.Items.Add(new Separator());
 
         var detach = new MenuItem { Header = "拆离此贴图", IsEnabled = grouped };

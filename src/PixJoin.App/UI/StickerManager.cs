@@ -858,6 +858,49 @@ public sealed class StickerManager
         if (!ClipboardService.TrySetImage(bmp)) WarnClipboardBusy();
     }
 
+    /// <summary>把贴图导出为临时 PNG 并放入剪贴板（粘贴即为图片文件，聊天/文件夹直接可用）。</summary>
+    public void CopyStickerAsFile(StickerWindow window)
+    {
+        try
+        {
+            string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "PixJoin");
+            System.IO.Directory.CreateDirectory(dir);
+            string path = System.IO.Path.Combine(dir, $"PixJoin_{DateTime.Now:yyyyMMdd_HHmmss}.png");
+            var opt = new ExportService.ExportOptions(_settings.Current.TransparentBackground, _settings.Current.AutoTrim);
+            var bmp = ExportService.Compose(ExportTargets(window), opt);
+            if (bmp is null) return;
+            ExportService.SavePng(bmp, path);
+            var files = new System.Collections.Specialized.StringCollection { path };
+            System.Windows.Clipboard.SetFileDropList(files);
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show($"复制为文件失败：{ex.Message}", "PixJoin",
+                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>用系统默认程序打开贴图（临时导出后启动）。</summary>
+    public void OpenStickerExternally(StickerWindow window)
+    {
+        try
+        {
+            string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "PixJoin");
+            System.IO.Directory.CreateDirectory(dir);
+            string path = System.IO.Path.Combine(dir, $"PixJoin_{DateTime.Now:yyyyMMdd_HHmmss}.png");
+            var opt = new ExportService.ExportOptions(_settings.Current.TransparentBackground, _settings.Current.AutoTrim);
+            var bmp = ExportService.Compose(ExportTargets(window), opt);
+            if (bmp is null) return;
+            ExportService.SavePng(bmp, path);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show($"打开失败：{ex.Message}", "PixJoin",
+                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+        }
+    }
+
     public void SaveStickerOrGroup(StickerWindow window)
     {
         var opt = new ExportService.ExportOptions(_settings.Current.TransparentBackground, _settings.Current.AutoTrim);
