@@ -40,6 +40,9 @@ public static class AnnotationHandles
                 }
                 return new Rect(a.X, a.Y, 0, 0);
             case AnnotationTool.Pen:
+            case AnnotationTool.Polyline:
+            case AnnotationTool.Line:
+            case AnnotationTool.Curve:
                 if (a.Points is { Length: >= 4 })
                 {
                     double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
@@ -138,6 +141,21 @@ public static class AnnotationHandles
             case AnnotationTool.Pen:
                 list.Add(new AnnotHandle(HandleKind.Move, Bounds(a).TopLeft, 0));
                 break;
+            case AnnotationTool.Line:
+            case AnnotationTool.Curve:
+                if (a.Points is { Length: >= 4 })
+                {
+                    list.Add(new AnnotHandle(HandleKind.ArrowPt, new Point(a.Points[0], a.Points[1]), 0));
+                    list.Add(new AnnotHandle(HandleKind.ArrowPt, new Point(a.Points[2], a.Points[3]), 1));
+                }
+                break;
+            case AnnotationTool.Polyline:
+                if (a.Points is { Length: >= 4 })
+                {
+                    for (int i = 0; i + 1 < a.Points.Length; i += 2)
+                        list.Add(new AnnotHandle(HandleKind.ArrowPt, new Point(a.Points[i], a.Points[i + 1]), i / 2));
+                }
+                break;
         }
         return list;
     }
@@ -184,12 +202,21 @@ public static class AnnotationHandles
                 }
                 return false;
             case AnnotationTool.Pen:
+            case AnnotationTool.Polyline:
                 if (a.Points is { Length: >= 4 })
                 {
                     double hit = Math.Max(tol, Math.Max(6, a.Thickness * 1.5));
                     for (int i = 2; i + 1 < a.Points.Length; i += 2)
                         if (PointSegDist(rel.X, rel.Y, a.Points[i - 2], a.Points[i - 1], a.Points[i], a.Points[i + 1]) <= hit) return true;
                     return false;
+                }
+                return false;
+            case AnnotationTool.Line:
+            case AnnotationTool.Curve:
+                if (a.Points is { Length: >= 4 })
+                {
+                    double hit = Math.Max(tol, Math.Max(6, a.Thickness * 1.5));
+                    return PointSegDist(rel.X, rel.Y, a.Points[0], a.Points[1], a.Points[2], a.Points[3]) <= hit;
                 }
                 return false;
             default:
@@ -261,10 +288,10 @@ public static class AnnotationHandles
                 return Make(a, corner: Math.Clamp(t * 0.8, 0, maxR));
             }
             case HandleKind.ArrowPt:
-                if (a.Points is not { Length: >= 6 }) return null;
+                if (a.Points is not { Length: >= 4 }) return null;
                 {
                     var pts = (double[])a.Points.Clone();
-                    if (h.Index == 1)
+                    if (h.Index == 1 && a.Tool == AnnotationTool.Arrow && a.Points.Length >= 6)
                     {
                         // 拖动弧顶 → 用锁定参数 t 反解控制点 C = (Q - (1-t)²P0 - t²P2) / (2t(1-t))，保证 B(t)=鼠标
                         double hsh = Math.Max(8, Math.Max(1, a.Thickness) * 4);
@@ -319,7 +346,17 @@ public static class AnnotationHandles
                         a.Points[4] + delta.X, a.Points[5] + delta.Y,
                     });
                 return Make(a, x: a.X + delta.X, y: a.Y + delta.Y);
+            case AnnotationTool.Line:
+            case AnnotationTool.Curve:
+                if (a.Points is { Length: >= 4 })
+                    return Make(a, x: a.X + delta.X, y: a.Y + delta.Y, points: new[]
+                    {
+                        a.Points[0] + delta.X, a.Points[1] + delta.Y,
+                        a.Points[2] + delta.X, a.Points[3] + delta.Y,
+                    });
+                return Make(a, x: a.X + delta.X, y: a.Y + delta.Y);
             case AnnotationTool.Pen:
+            case AnnotationTool.Polyline:
                 if (a.Points is { Length: >= 2 })
                 {
                     var pts = new double[a.Points.Length];

@@ -85,6 +85,7 @@ public static class AnnotationPainter
                 break;
 
             case AnnotationTool.Pen:
+            case AnnotationTool.Polyline:
                 if (a.Points is { Length: >= 4 })
                 {
                     var poly = new Polyline { Stroke = brush, StrokeThickness = stroke };
@@ -93,6 +94,26 @@ public static class AnnotationPainter
                         poly.Points.Add(new Point(a.Points[i] * sx, a.Points[i + 1] * sy));
                     canvas.Children.Add(poly);
                 }
+                break;
+
+            case AnnotationTool.Line:
+                if (a.Points is { Length: >= 4 })
+                {
+                    var line = new Line
+                    {
+                        X1 = a.Points[0] * sx, Y1 = a.Points[1] * sy,
+                        X2 = a.Points[2] * sx, Y2 = a.Points[3] * sy,
+                        Stroke = brush, StrokeThickness = stroke,
+                    };
+                    if (a.Dashed) line.StrokeDashArray = new DoubleCollection { 4, 3 };
+                    canvas.Children.Add(line);
+                }
+                break;
+
+            case AnnotationTool.Curve:
+                if (a.Points is { Length: >= 4 })
+                    DrawWave(canvas, a.Points[0] * sx, a.Points[1] * sy, a.Points[2] * sx, a.Points[3] * sy,
+                        brush, stroke, a.Dashed);
                 break;
 
             case AnnotationTool.Text:
@@ -223,6 +244,36 @@ public static class AnnotationPainter
                 break;
             }
         }
+    }
+
+    /// <summary>波浪线：起点→终点，正弦振幅随线宽，两端收于端点。</summary>
+    private static void DrawWave(Canvas canvas, double x0, double y0, double x1, double y1,
+        Brush brush, double stroke, bool dashed)
+    {
+        double dx = x1 - x0, dy = y1 - y0;
+        double len = Math.Sqrt(dx * dx + dy * dy);
+        if (len < 1e-6) return;
+        double ux = dx / len, uy = dy / len;
+        double nx = -uy, ny = ux;
+        double amp = Math.Max(4, stroke * 1.2);
+        int cycles = Math.Max(1, (int)Math.Round(len / 60.0));
+        int steps = Math.Max(8, cycles * 8);
+
+        var geo = new StreamGeometry();
+        using (var g = geo.Open())
+        {
+            g.BeginFigure(new Point(x0, y0), false, false);
+            for (int i = 1; i <= steps; i++)
+            {
+                double t = i / (double)steps;
+                double off = Math.Sin(t * cycles * Math.PI * 2) * amp;
+                g.LineTo(new Point(x0 + dx * t + nx * off, y0 + dy * t + ny * off), true, false);
+            }
+        }
+        geo.Freeze();
+        var p = new Path { Data = geo, Stroke = brush, StrokeThickness = stroke };
+        if (dashed) p.StrokeDashArray = new DoubleCollection { 4, 3 };
+        canvas.Children.Add(p);
     }
 
     /// <summary>

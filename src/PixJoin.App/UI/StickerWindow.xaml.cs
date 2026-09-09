@@ -1370,12 +1370,23 @@ public sealed partial class StickerWindow : Window
                 });
                 break;
 
+            case AnnotationTool.Line:
+            case AnnotationTool.Curve:
+                _annotations.Add(new Annotation
+                {
+                    Tool = _annotTool!.Value,
+                    Points = new[] { s.X, s.Y, e.X, e.Y },
+                    Color = _annotColor, Thickness = _annotThickness,
+                });
+                break;
+
             case AnnotationTool.Pen:
+            case AnnotationTool.Polyline:
                 if (_annotPenPts.Count >= 4)
                 {
                     _annotations.Add(new Annotation
                     {
-                        Tool = AnnotationTool.Pen, Points = _annotPenPts.ToArray(),
+                        Tool = _annotTool!.Value, Points = _annotPenPts.ToArray(),
                         Color = _annotColor, Thickness = _annotThickness,
                     });
                 }
@@ -1427,7 +1438,16 @@ public sealed partial class StickerWindow : Window
                         Points = new[] { s.X, s.Y, (s.X + e.X) / 2, (s.Y + e.Y) / 2, e.X, e.Y },
                     };
                     break;
+                case AnnotationTool.Line:
+                case AnnotationTool.Curve:
+                    tmp = new Annotation
+                    {
+                        Tool = tool, Color = _annotColor, Thickness = _annotThickness,
+                        Points = new[] { s.X, s.Y, e.X, e.Y },
+                    };
+                    break;
                 case AnnotationTool.Pen:
+                case AnnotationTool.Polyline:
                     tmp = new Annotation
                     {
                         Tool = tool, Color = _annotColor, Thickness = _annotThickness,

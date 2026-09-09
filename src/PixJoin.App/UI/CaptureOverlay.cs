@@ -1417,6 +1417,28 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
                     Color = _annotColor, Thickness = _annotThickness, Dashed = _annotDashed, Arrow = _annotArrowStyle,
                 });
                 break;
+            case AnnotationTool.Line:
+            case AnnotationTool.Curve:
+                _annotations.Add(new Annotation
+                {
+                    Tool = tool,
+                    Points = new[] { _annotStart.X, _annotStart.Y, _annotLast.X, _annotLast.Y },
+                    Color = _annotColor, Thickness = _annotThickness, Dashed = _annotDashed,
+                });
+                break;
+            case AnnotationTool.Polyline:
+                if (_annotPenPts.Count >= 4)
+                {
+                    var polyPts = new double[_annotPenPts.Count * 2];
+                    for (int i = 0; i < _annotPenPts.Count; i++) { polyPts[i * 2] = _annotPenPts[i].X; polyPts[i * 2 + 1] = _annotPenPts[i].Y; }
+                    _annotations.Add(new Annotation
+                    {
+                        Tool = AnnotationTool.Polyline, Points = polyPts,
+                        Color = _annotColor, Thickness = _annotThickness, Dashed = _annotDashed,
+                    });
+                }
+                _annotPenPts.Clear();
+                break;
             case AnnotationTool.Pen:
                 if (_annotPenPts.Count < 2) return;
                 {
@@ -1585,6 +1607,22 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
                             _annotLast.X, _annotLast.Y,
                         },
                     };
+                    break;
+                case AnnotationTool.Line:
+                case AnnotationTool.Curve:
+                    tmp = new Annotation
+                    {
+                        Tool = tool, Color = _annotColor, Thickness = _annotThickness, Dashed = _annotDashed, Arrow = _annotArrowStyle,
+                        Points = new[] { _annotStart.X, _annotStart.Y, _annotLast.X, _annotLast.Y },
+                    };
+                    break;
+                case AnnotationTool.Polyline:
+                    if (_annotPenPts.Count >= 2)
+                    {
+                        var polyPts = new double[_annotPenPts.Count * 2];
+                        for (int i = 0; i < _annotPenPts.Count; i++) { polyPts[i * 2] = _annotPenPts[i].X; polyPts[i * 2 + 1] = _annotPenPts[i].Y; }
+                        tmp = new Annotation { Tool = tool, Color = _annotColor, Thickness = _annotThickness, Dashed = _annotDashed, Arrow = _annotArrowStyle, Points = polyPts };
+                    }
                     break;
                 case AnnotationTool.Pen:
                     if (_annotPenPts.Count >= 2)

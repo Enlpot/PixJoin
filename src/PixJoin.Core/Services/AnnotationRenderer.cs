@@ -63,6 +63,7 @@ public static class AnnotationRenderer
                         break;
 
                     case AnnotationTool.Pen:
+                    case AnnotationTool.Polyline:
                         if (a.Points is { Length: >= 4 })
                         {
                             var geo = new StreamGeometry();
@@ -75,6 +76,16 @@ public static class AnnotationRenderer
                             geo.Freeze();
                             dc.DrawGeometry(null, pen, geo);
                         }
+                        break;
+
+                    case AnnotationTool.Line:
+                        if (a.Points is { Length: >= 4 })
+                            dc.DrawLine(pen, new Point(a.Points[0], a.Points[1]), new Point(a.Points[2], a.Points[3]));
+                        break;
+
+                    case AnnotationTool.Curve:
+                        if (a.Points is { Length: >= 4 })
+                            DrawWave(dc, a.Points[0], a.Points[1], a.Points[2], a.Points[3], a.Color, a.Thickness, a.Dashed);
                         break;
 
                     case AnnotationTool.Text:
@@ -291,6 +302,36 @@ public static class AnnotationRenderer
 
     /// <summary>
     /// 鏇茬嚎绠ご锛堜簩娆¤礉濉炲皵锛屼笁鐐规帶鍒讹細璧风偣 / 寮洸鎺у埗鐐?/ 缁堢偣锛夈€?    /// 鏉嗕负璐濆灏旀洸绾匡紱绠ご澶存部缁堢偣鍒囩嚎鏂瑰悜锛圥2 - C锛夈€?    /// </summary>
+    /// <summary>波浪线（DrawingContext 版）：正弦振幅随线宽，两端收于端点。</summary>
+    private static void DrawWave(DrawingContext dc, double x0, double y0, double x1, double y1,
+        Color color, double thickness, bool dashed)
+    {
+        double dx = x1 - x0, dy = y1 - y0;
+        double len = Math.Sqrt(dx * dx + dy * dy);
+        if (len < 1e-6) return;
+        double ux = dx / len, uy = dy / len;
+        double nx = -uy, ny = ux;
+        double amp = Math.Max(4, thickness * 1.2);
+        int cycles = Math.Max(1, (int)Math.Round(len / 60.0));
+        int steps = Math.Max(8, cycles * 8);
+
+        var geo = new StreamGeometry();
+        using (var g = geo.Open())
+        {
+            g.BeginFigure(new Point(x0, y0), false, false);
+            for (int i = 1; i <= steps; i++)
+            {
+                double t = i / (double)steps;
+                double off = Math.Sin(t * cycles * Math.PI * 2) * amp;
+                g.LineTo(new Point(x0 + dx * t + nx * off, y0 + dy * t + ny * off), true, false);
+            }
+        }
+        geo.Freeze();
+        var wp = new Pen(new SolidColorBrush(color), thickness);
+        if (dashed) wp.DashStyle = DashStyles.Dash;
+        dc.DrawGeometry(null, wp, geo);
+    }
+
     private static void DrawCurvedArrow(DrawingContext dc, double x0, double y0, double cx, double cy, double x2, double y2,
         Color color, double thickness, bool dashed = false, ArrowStyle style = ArrowStyle.Solid)
     {

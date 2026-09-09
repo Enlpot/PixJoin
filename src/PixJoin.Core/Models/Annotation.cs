@@ -15,6 +15,9 @@ public enum AnnotationTool
     Number,      // 序号（递增圆圈数字）
     Spotlight,   // 聚光灯（弱化周围区域，突出中间，可圆/方）
     Magnifier,   // 放大镜（区域内容放大显示，可圆/方）
+    Line,        // 直线（两点）
+    Curve,       // 波浪线（两点，正弦）
+    Polyline,    // 折线（多点）
 }
 
 /// <summary>
@@ -33,7 +36,8 @@ public sealed class Annotation
 
     /// <summary>
     /// 点列（物理像素，扁平 x,y 序列）：
-    /// 画笔 = 自由点列；箭头 = 恰好 3 点 [起点, 弯曲控制点, 终点]（二次贝塞尔）。
+    /// 画笔 = 自由点列；箭头 = 恰好 3 点 [起点, 弯曲控制点, 终点]（二次贝塞尔）；
+    /// 直线 / 波浪线 = 恰好 2 点 [起点, 终点]；折线 = 多点。
     /// </summary>
     public double[]? Points { get; init; }
 
