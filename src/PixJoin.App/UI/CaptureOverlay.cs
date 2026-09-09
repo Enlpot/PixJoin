@@ -13,7 +13,7 @@ using PixJoin.Core.Services;
 
 namespace PixJoin.App.UI;
 
-public enum CaptureAction { Pin, Copy, Save, Annotate, ScrollCapture, Translate }
+public enum CaptureAction { Pin, Copy, Save, QuickSave, Annotate, ScrollCapture, Translate }
 
 public sealed record CaptureResult(BitmapSource Bitmap, Rect PhysicalRect, CaptureAction Action);
 
@@ -694,7 +694,7 @@ public CaptureOverlay(ScreenShot shot, Core.Services.AppSettings? settings = nul
         }
         else if (e.Key == Key.S && _hasSelection && !_annotDrawing)
         {
-            Finish(CaptureAction.Save);
+            Finish((Keyboard.Modifiers & ModifierKeys.Shift) != 0 ? CaptureAction.QuickSave : CaptureAction.Save);
             e.Handled = true;
         }
         else if (e.Key == Key.Delete && _hasSelection && _selectedIndex is { } dsi)

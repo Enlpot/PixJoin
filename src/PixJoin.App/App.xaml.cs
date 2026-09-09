@@ -387,6 +387,10 @@ public partial class App : Application
                 SaveBitmap(result.Bitmap);
                 break;
 
+            case CaptureAction.QuickSave:
+                SaveBitmap(result.Bitmap, quick: true);
+                break;
+
             case CaptureAction.ScrollCapture:
                 StartScrollCapture(result.Bitmap);
                 break;
@@ -412,8 +416,29 @@ public partial class App : Application
 
     private void OnCaptureCancelled() { }
 
-    private void SaveBitmap(BitmapSource bmp)
+    private void SaveBitmap(BitmapSource bmp, bool quick = false)
     {
+        if (quick)
+        {
+            string dir = _settings.Current.LastSaveDirectory;
+            if (!Directory.Exists(dir))
+                dir = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+            try
+            {
+                string path = System.IO.Path.Combine(dir, $"PixJoin_{DateTime.Now:yyyyMMdd_HHmmss}.png");
+                ExportService.SavePng(bmp, path);
+                System.Windows.MessageBox.Show($"已快速保存：{path}", "PixJoin",
+                    System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+                return;
+            }
+            catch (Exception ex)
+            {
+                System.Windows.MessageBox.Show($"快速保存失败：{ex.Message}", "PixJoin",
+                    System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+                return;
+            }
+        }
+
         var dlg = new Microsoft.Win32.SaveFileDialog
         {
             Title = "保存截图",
