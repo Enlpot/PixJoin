@@ -83,6 +83,8 @@ public partial class SettingsWindow : Window
         CmbOcrLang.Items.Add(new ComboBoxItem { Content = "繁体中文", Tag = "chinese_cht" });
         CmbOcrLang.SelectedIndex = Math.Max(0, CmbOcrLang.Items.OfType<ComboBoxItem>()
             .ToList().FindIndex(i => (i.Tag as string) == s.OcrLanguage));
+        CmbEnterAction.SelectedIndex = Math.Max(0, CmbEnterAction.Items.OfType<ComboBoxItem>()
+            .ToList().FindIndex(i => (i.Tag as string) == s.CaptureEnterAction));
         ChkTransparent.IsChecked = s.TransparentBackground;
         ChkTrim.IsChecked = s.AutoTrim;
         ChkAutoStart.IsChecked = s.StartWithWindows;
@@ -188,6 +190,7 @@ public partial class SettingsWindow : Window
         s.EscCloseEnabled = ChkEsc.IsChecked == true;
         s.OcrEnabled = ChkOcr.IsChecked == true;
         s.OcrLanguage = (CmbOcrLang.SelectedItem as ComboBoxItem)?.Tag as string ?? "ch";
+        s.CaptureEnterAction = (CmbEnterAction.SelectedItem as ComboBoxItem)?.Tag as string ?? "pin";
         s.TransparentBackground = ChkTransparent.IsChecked == true;
         s.AutoTrim = ChkTrim.IsChecked == true;
         s.StartWithWindows = ChkAutoStart.IsChecked == true;

@@ -339,7 +339,7 @@ public partial class App : Application
             LogDebug($"StartCapture: 截图完成 {pw}x{ph}，准备创建 CaptureOverlay");
 
             _stickers.SetGuideVisible(false);
-            _capture = new CaptureOverlay(shot);
+            _capture = new CaptureOverlay(shot, _settings.Current);
             _capture.Completed += OnCaptureCompleted;
             _capture.Cancelled += OnCaptureCancelled;
             _capture.Closed += (_, _) =>

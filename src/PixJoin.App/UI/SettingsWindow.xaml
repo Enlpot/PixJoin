@@ -111,6 +111,16 @@
                     <StackPanel Margin="8,6">
                         <CheckBox x:Name="ChkTransparent" Content="透明背景"/>
                         <CheckBox x:Name="ChkTrim" Content="自动裁剪空白边缘" Margin="0,8,0,0"/>
+                        <DockPanel Margin="0,8,0,0">
+                            <TextBlock Text="截图后 Enter 预设动作：" VerticalAlignment="Center"/>
+                            <ComboBox x:Name="CmbEnterAction" Width="140" HorizontalAlignment="Left" Margin="8,0,0,0">
+                                <ComboBoxItem Content="贴图" Tag="pin"/>
+                                <ComboBoxItem Content="复制" Tag="copy"/>
+                                <ComboBoxItem Content="保存" Tag="save"/>
+                                <ComboBoxItem Content="标注" Tag="annotate"/>
+                                <ComboBoxItem Content="不自动执行" Tag="none"/>
+                            </ComboBox>
+                        </DockPanel>
                     </StackPanel>
                 </GroupBox>
 

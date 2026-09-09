@@ -159,9 +159,12 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
     public event Action<CaptureResult>? Completed;
     public event Action? Cancelled;
 
-    public CaptureOverlay(ScreenShot shot) : base(clickThrough: false, noActivate: false)
+        private readonly Core.Services.AppSettings? _settings;
+
+public CaptureOverlay(ScreenShot shot, Core.Services.AppSettings? settings = null) : base(clickThrough: false, noActivate: false)
     {
         _shot = shot;
+        _settings = settings;
         _bgImage.Source = shot.Bitmap;   // 冻结画面：选区洞显示的就是截图本身
         Cursor = Cursors.Cross;
         Focusable = true;
@@ -673,7 +676,7 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         }
         else if (e.Key == Key.Enter && _hasSelection && !_annotDrawing)
         {
-            Finish(CaptureAction.Pin);
+            Finish(DefaultEnterAction());
             e.Handled = true;
         }
         else if (e.Key == Key.C && _hasSelection && !_annotDrawing)
@@ -1893,6 +1896,20 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
     }
 
     // ================= 完成 / 取消 =================
+
+    /// <summary>Enter 预设动作：按设置返回 pin/copy/save/annotate，none 时默认贴图。</summary>
+    private CaptureAction DefaultEnterAction()
+    {
+        var s = _settings;
+        if (s is null) return CaptureAction.Pin;
+        return s.CaptureEnterAction switch
+        {
+            "copy" => CaptureAction.Copy,
+            "save" => CaptureAction.Save,
+            "annotate" => CaptureAction.Annotate,
+            _ => CaptureAction.Pin,
+        };
+    }
 
     private void Finish(CaptureAction action)
     {

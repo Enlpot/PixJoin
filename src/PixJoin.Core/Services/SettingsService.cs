@@ -71,6 +71,9 @@ public sealed class AppSettings
 
     public bool AutoTrim { get; set; } = true;
 
+    /// <summary>截图后按 Enter 的预设动作：pin / copy / save / annotate / none（不自动执行）。</summary>
+    public string CaptureEnterAction { get; set; } = "pin";
+
     public string LastSaveDirectory { get; set; } =
         Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
 
