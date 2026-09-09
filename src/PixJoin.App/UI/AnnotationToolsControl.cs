@@ -92,7 +92,14 @@ public class AnnotationToolsControl : StackPanel
             _colorBlock.Background = new SolidColorBrush(_color);
             ColorChanged?.Invoke(_color);
         };
-        Children.Add(_colorBlock);
+        // 分隔线 + 参数分组（颜色 / 粗细 / 虚线独立成组，PixPin 风格）
+        Children.Add(new Border
+        {
+            Width = 1, Height = 20 * scale,
+            Background = new SolidColorBrush(Color.FromArgb(0x44, 0xFF, 0xFF, 0xFF)),
+            Margin = new Thickness(6 * scale, 0, 4 * scale, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
 
         _thickBtn = MakeTextButton($"{_thickness:0.#}", "粗细", scale);
         _thickBtn.Click += (_, _) =>
@@ -103,7 +110,19 @@ public class AnnotationToolsControl : StackPanel
             RefreshThickText();
             ThicknessChanged?.Invoke(_thickness);
         };
-        Children.Add(_thickBtn);
+
+        var paramGroup = new Border
+        {
+            Background = new SolidColorBrush(Color.FromRgb(0x2E, 0x2E, 0x2E)),
+            CornerRadius = new CornerRadius(4 * scale),
+            Padding = new Thickness(5 * scale, 3 * scale, 5 * scale, 3 * scale),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new StackPanel { Orientation = Orientation.Horizontal },
+        };
+        var paramInner = (StackPanel)paramGroup.Child;
+        paramInner.Children.Add(_colorBlock);
+        paramInner.Children.Add(_thickBtn);
+        Children.Add(paramGroup);
 
         RefreshToolState();
     }
