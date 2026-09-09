@@ -1,4 +1,4 @@
-<Window x:Class="PixJoin.App.UI.SettingsWindow"
+﻿<Window x:Class="PixJoin.App.UI.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="PixJoin 设置"
@@ -28,6 +28,13 @@
                             <TextBox x:Name="TxtHotkey" IsReadOnly="True" Height="26" VerticalContentAlignment="Center"/>
                         </DockPanel>
                         <TextBlock x:Name="TxtHotkeyHint" Text="点击「更改…」后按下新的组合键"
+                                   Foreground="#888" FontSize="11" Margin="0,4,0,0"/>
+                        <DockPanel Margin="0,10,0,0">
+                            <Button x:Name="BtnChangePinHotkey" DockPanel.Dock="Right" Content="更改…" Width="64"
+                                    Margin="8,0,0,0" Click="OnChangePinHotkey"/>
+                            <TextBox x:Name="TxtPinHotkey" IsReadOnly="True" Height="26" VerticalContentAlignment="Center"/>
+                        </DockPanel>
+                        <TextBlock Text="「贴图」= 剪贴板图片（或复制/选中的图片文件）直接钉屏"
                                    Foreground="#888" FontSize="11" Margin="0,4,0,0"/>
                     </StackPanel>
                 </GroupBox>

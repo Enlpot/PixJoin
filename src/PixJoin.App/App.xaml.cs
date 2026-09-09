@@ -30,6 +30,7 @@ public partial class App : Application
 {
     private const string SingleInstanceId = "PixJoin.SingleInstance.v1";
     private const int HotKeyIdCapture = 1;
+    private const int HotKeyIdPin = 2;
 
     private static Mutex? _singleInstanceMutex;
 
@@ -38,6 +39,7 @@ public partial class App : Application
     private HotKeyManager _hotkeys = null!;
     private NotifyIcon? _trayIcon;
     private ToolStripMenuItem? _trayCaptureItem;   // 托盘[截图]菜单项，设置变更后同步快捷键文本
+    private ToolStripMenuItem? _trayPinItem;       // 托盘[从剪贴板贴图]菜单项，同上
     private Icon? _appIcon;
     private CaptureOverlay? _capture;
     private SettingsWindow? _settingsWindow;
@@ -88,8 +90,10 @@ public partial class App : Application
         _hotkeys.HotKeyPressed += (_, id) =>
         {
             if (id == HotKeyIdCapture) Dispatcher.Invoke(StartCapture);
+            else if (id == HotKeyIdPin) Dispatcher.Invoke(PinFromClipboard);
         };
         RegisterCaptureHotKey();
+        RegisterPinHotKey();
         InstallEscCloseHook();
 
         // ---------- 托盘 ----------
@@ -245,10 +249,13 @@ public partial class App : Application
         _settingsWindow = new SettingsWindow(_settings, () =>
         {
             ReRegisterCaptureHotKey();
+            ReRegisterPinHotKey();
             ApplyAutoStart(_settings.Current.StartWithWindows);
             _trayIcon!.Text = $"PixJoin —— 截图 / 贴图 / 吸附组合   [{_settings.Current.HotkeyDisplay}]";
             if (_trayCaptureItem is not null)
                 _trayCaptureItem.Text = $"截图 ({_settings.Current.HotkeyDisplay})";
+            if (_trayPinItem is not null)
+                _trayPinItem.Text = $"从剪贴板贴图 ({_settings.Current.PinHotkeyDisplay})";
         });
         _settingsWindow.Show();
         _settingsWindow.Activate();
@@ -259,6 +266,26 @@ public partial class App : Application
     {
         _hotkeys.Unregister(HotKeyIdCapture);
         RegisterCaptureHotKey();
+    }
+
+    /// <summary>注册「贴图」快捷键：剪贴板图片（或复制的图片文件）直接钉屏。</summary>
+    private void RegisterPinHotKey()
+    {
+        var s = _settings.Current;
+        bool ok = _hotkeys.Register(HotKeyIdPin, s.PinHotkeyModifiers, s.PinHotkeyVirtualKey);
+        LogDebug($"RegisterPinHotKey: ok={ok} mod={s.PinHotkeyModifiers} vk={s.PinHotkeyVirtualKey} ({s.PinHotkeyDisplay})");
+        if (!ok)
+        {
+            _trayIcon?.ShowBalloonTip(8000, "快捷键注册失败",
+                $"{s.PinHotkeyDisplay} 可能已被其它程序占用，请改用其它组合（可在设置中修改）。",
+                ToolTipIcon.Warning);
+        }
+    }
+
+    private void ReRegisterPinHotKey()
+    {
+        _hotkeys.Unregister(HotKeyIdPin);
+        RegisterPinHotKey();
     }
 
     /// <summary>开机自启：写 / 删 HKCU 的 Run 启动项（当前用户级，无需管理员）。</summary>
@@ -416,7 +443,8 @@ public partial class App : Application
 
         menu.Items.Add(new ToolStripSeparator());
 
-        var fromClipboard = new ToolStripMenuItem("从剪贴板贴图");
+        _trayPinItem = new ToolStripMenuItem($"从剪贴板贴图 ({_settings.Current.PinHotkeyDisplay})");
+        var fromClipboard = _trayPinItem;
         fromClipboard.Click += (_, _) => PinFromClipboard();
         menu.Items.Add(fromClipboard);
 
@@ -501,14 +529,43 @@ public partial class App : Application
 
     private void PinFromClipboard()
     {
-        if (!System.Windows.Clipboard.ContainsImage())
+        BitmapSource? img = null;
+        try
         {
-            MessageBox.Show("剪贴板中没有图片。", "PixJoin", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
+            if (System.Windows.Clipboard.ContainsImage())
+            {
+                img = System.Windows.Clipboard.GetImage();
+            }
+            else if (System.Windows.Clipboard.ContainsFileDropList())
+            {
+                // 复制了图片文件：取第一个图片文件直接贴（PixPin 同款）
+                foreach (var f in System.Windows.Clipboard.GetFileDropList())
+                {
+                    string ext = Path.GetExtension(f).ToLowerInvariant();
+                    if (ext is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".tif" or ".tiff" or ".webp")
+                    {
+                        var bmp = new BitmapImage();
+                        bmp.BeginInit();
+                        bmp.UriSource = new Uri(f);
+                        bmp.CacheOption = BitmapCacheOption.OnLoad;
+                        bmp.EndInit();
+                        bmp.Freeze();
+                        img = bmp;
+                        break;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LogException(ex);
         }
 
-        var img = System.Windows.Clipboard.GetImage();
-        if (img is null) return;
+        if (img is null)
+        {
+            MessageBox.Show("剪贴板中没有图片或图片文件。", "PixJoin", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
 
         var pos = CursorPhysical();
         _stickers.CreateSticker(img, new Point(pos.X - img.PixelWidth / 2.0, pos.Y - img.PixelHeight / 2.0));

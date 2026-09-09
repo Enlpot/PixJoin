@@ -16,6 +16,14 @@ public sealed class AppSettings
 
     public string HotkeyDisplay => HotkeyText.Build(HotkeyModifiers, HotkeyVirtualKey);
 
+    // ---- 贴图快捷键（从剪贴板/复制的图片文件直接钉屏） ----
+    public uint PinHotkeyModifiers { get; set; } = 2 /*Ctrl*/ | 4 /*Shift*/;
+
+    /// <summary>默认 'P' = 0x50。</summary>
+    public uint PinHotkeyVirtualKey { get; set; } = 0x50;
+
+    public string PinHotkeyDisplay => HotkeyText.Build(PinHotkeyModifiers, PinHotkeyVirtualKey);
+
     // ---- 吸附 / 拆分 ----
     public double SnapDistance { get; set; } = 10;
 

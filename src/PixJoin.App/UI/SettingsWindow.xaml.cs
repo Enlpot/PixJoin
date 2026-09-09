@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
@@ -21,6 +21,10 @@ public partial class SettingsWindow : Window
     private uint _newVk;
     private bool _capturingHotkey;
 
+    private uint _newPinModifiers;
+    private uint _newPinVk;
+    private bool _capturingPinHotkey;
+
     private sealed class ComboItem
     {
         public ComboItem(string text, uint value) { Text = text; Value = value; }
@@ -38,6 +42,8 @@ public partial class SettingsWindow : Window
         var s = settings.Current;
         _newModifiers = s.HotkeyModifiers;
         _newVk = s.HotkeyVirtualKey;
+        _newPinModifiers = s.PinHotkeyModifiers;
+        _newPinVk = s.PinHotkeyVirtualKey;
 
         // 保护键下拉
         CmbProtect.Items.Add(new ComboItem("Ctrl", Win32.MOD_CONTROL));
@@ -56,6 +62,7 @@ public partial class SettingsWindow : Window
     {
         var s = _settings.Current;
         TxtHotkey.Text = s.HotkeyDisplay;
+        TxtPinHotkey.Text = s.PinHotkeyDisplay;
         TxtSnap.Text = s.SnapDistance.ToString("0.##");
         TxtAlign.Text = s.AlignTolerance.ToString("0.##");
         TxtDetach.Text = s.DetachDistance.ToString("0.##");
@@ -84,14 +91,27 @@ public partial class SettingsWindow : Window
         TxtHotkeyHint.Text = "请按下新的组合键…（按 Esc 取消）";
     }
 
+    private void OnChangePinHotkey(object sender, RoutedEventArgs e)
+    {
+        _capturingPinHotkey = true;
+        BtnChangePinHotkey.IsEnabled = false;
+        TxtHotkeyHint.Text = "请为「贴图」按下新的组合键…（按 Esc 取消）";
+    }
+
     private void OnPreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (!_capturingHotkey) return;
+        if (_capturingHotkey) { CaptureTarget(true, e, Key.Escape, TxtHotkey, BtnChangeHotkey, () => _newModifiers, v => _newModifiers = v, () => _newVk, v => _newVk = v); return; }
+        if (_capturingPinHotkey) { CaptureTarget(false, e, Key.Escape, TxtPinHotkey, BtnChangePinHotkey, () => _newPinModifiers, v => _newPinModifiers = v, () => _newPinVk, v => _newPinVk = v); return; }
+    }
 
-        if (e.Key == Key.Escape)
+    /// <summary>快捷键捕获通用逻辑：Esc 取消；至少一个修饰键；写入目标字段与显示框。</summary>
+    private void CaptureTarget(bool isCapture, KeyEventArgs e, Key escKey, TextBox txt, Button btn,
+                               Func<uint> getMods, Action<uint> setMods, Func<uint> getVk, Action<uint> setVk)
+    {
+        if (e.Key == escKey)
         {
-            _capturingHotkey = false;
-            BtnChangeHotkey.IsEnabled = true;
+            if (isCapture) _capturingHotkey = false; else _capturingPinHotkey = false;
+            btn.IsEnabled = true;
             TxtHotkeyHint.Text = "已取消修改";
             e.Handled = true;
             return;
@@ -119,12 +139,12 @@ public partial class SettingsWindow : Window
         }
 
         uint vk = (uint)KeyInterop.VirtualKeyFromKey(key);
-        _newModifiers = mods;
-        _newVk = vk;
-        TxtHotkey.Text = HotkeyText.Build(mods, vk);
-        _capturingHotkey = false;
-        BtnChangeHotkey.IsEnabled = true;
-        TxtHotkeyHint.Text = $"已设置：{TxtHotkey.Text}";
+        setMods(mods);
+        setVk(vk);
+        txt.Text = HotkeyText.Build(mods, vk);
+        if (isCapture) _capturingHotkey = false; else _capturingPinHotkey = false;
+        btn.IsEnabled = true;
+        TxtHotkeyHint.Text = $"已设置：{txt.Text}";
         e.Handled = true;
     }
 
@@ -137,6 +157,8 @@ public partial class SettingsWindow : Window
         var s = _settings.Current;
         s.HotkeyModifiers = _newModifiers;
         s.HotkeyVirtualKey = _newVk;
+        s.PinHotkeyModifiers = _newPinModifiers;
+        s.PinHotkeyVirtualKey = _newPinVk;
 
         if (double.TryParse(TxtSnap.Text, out var snap)) s.SnapDistance = Math.Clamp(snap, 0, 100);
         if (double.TryParse(TxtAlign.Text, out var align)) s.AlignTolerance = Math.Clamp(align, 0, 50);
