@@ -32,6 +32,7 @@ public class AnnotationToolsControl : StackPanel
         (AnnotationTool.Mosaic, "▦", "马赛克"),
         (AnnotationTool.Number, "①", "序号"),
         (AnnotationTool.Spotlight, "◎", "聚光灯"),
+        (AnnotationTool.Magnifier, "🔍", "放大镜"),
     };
 
     private static readonly double[] ThickSteps = { 2, 3, 4, 6, 8, 12 };

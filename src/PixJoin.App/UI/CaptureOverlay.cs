@@ -1388,6 +1388,7 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
             case AnnotationTool.Highlight:
             case AnnotationTool.Mosaic:
             case AnnotationTool.Spotlight:
+            case AnnotationTool.Magnifier:
             {
                 double x = Math.Min(_annotStart.X, _annotLast.X);
                 double y = Math.Min(_annotStart.Y, _annotLast.Y);
@@ -1547,9 +1548,11 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
 
         // 已固化标注：每个标注用自身颜色/粗细（选中后改一个不影响其他）
         var annotSize = new Size(_annotLayer.ActualWidth, _annotLayer.ActualHeight);
+        BitmapSource? annotSource = null;
+        try { annotSource = _shot.Crop(_selectionRect); } catch { /* 放大镜无源图时只画框 */ }
         foreach (var a in _annotations)
         {
-            AnnotationPainter.Draw(_annotLayer, a, dip, dip, annotSize);
+            AnnotationPainter.Draw(_annotLayer, a, dip, dip, annotSize, annotSource);
         }
 
         // 进行中绘制（用当前工具颜色/粗细）
@@ -1563,6 +1566,7 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
                 case AnnotationTool.Ellipse:
                 case AnnotationTool.Highlight:
                 case AnnotationTool.Spotlight:
+                case AnnotationTool.Magnifier:
                     tmp = new Annotation
                     {
                         Tool = tool, Color = _annotColor, Thickness = _annotThickness, Dashed = _annotDashed, Arrow = _annotArrowStyle,
@@ -1591,7 +1595,7 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
                     }
                     break;
             }
-            if (tmp is not null) AnnotationPainter.Draw(_annotLayer, tmp, dip, dip, annotSize);
+            if (tmp is not null) AnnotationPainter.Draw(_annotLayer, tmp, dip, dip, annotSize, annotSource);
         }
 
         // 选中框 + 控制点（拖动中隐藏：只画标注本体，保证跟手；松手后恢复）

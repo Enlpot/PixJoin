@@ -94,6 +94,7 @@ public static class AnnotationHandles
             }
             case AnnotationTool.Ellipse:
             case AnnotationTool.Spotlight:
+            case AnnotationTool.Magnifier:
             {
                 double x = a.X, y = a.Y, w = a.W, h = a.H;
                 list.Add(new AnnotHandle(HandleKind.Corner, new Point(x, y), 0));

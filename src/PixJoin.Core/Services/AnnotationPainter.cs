@@ -18,7 +18,8 @@ public static class AnnotationPainter
 {
     /// <summary>把一个标注画到画布上（与截图 / 贴图 / 最终渲染一致的矢量外观）。</summary>
     /// <param name="canvasSize">画布尺寸（DIP）。聚光灯需据此弱化画布内除中心区外的全部区域；其它工具可忽略。</param>
-    public static void Draw(Canvas canvas, Annotation a, double sx, double sy, Size? canvasSize = null)
+    /// <param name="sourceImage">源图像（标注坐标所在图像）。放大镜需据此截取并放大区域内容。</param>
+    public static void Draw(Canvas canvas, Annotation a, double sx, double sy, Size? canvasSize = null, BitmapSource? sourceImage = null)
     {
         if (canvas is null || a is null) return;
         var brush = new SolidColorBrush(a.Color);
@@ -105,6 +106,61 @@ public static class AnnotationPainter
                 };
                 Canvas.SetLeft(tb, a.X * sx); Canvas.SetTop(tb, a.Y * sy);
                 canvas.Children.Add(tb);
+                break;
+            }
+
+            case AnnotationTool.Magnifier:
+            {
+                double zoom = Math.Max(1.5, a.Zoom);
+                double cx = (a.X + a.W / 2) * sx;
+                double cy = (a.Y + a.H / 2) * sy;
+                double dw = Math.Max(2, a.W * zoom * sx);    // 放大镜显示尺寸（DIP）
+                double dh = Math.Max(2, a.H * zoom * sy);
+
+                if (sourceImage is not null && a.W > 1 && a.H > 1)
+                {
+                    int pw = sourceImage.PixelWidth, ph = sourceImage.PixelHeight;
+                    int sx0 = Math.Clamp((int)Math.Round(a.X), 0, pw - 1);
+                    int sy0 = Math.Clamp((int)Math.Round(a.Y), 0, ph - 1);
+                    int sw = Math.Clamp((int)Math.Round(a.W), 1, pw - sx0);
+                    int sh = Math.Clamp((int)Math.Round(a.H), 1, ph - sy0);
+                    try
+                    {
+                        var crop = new CroppedBitmap(sourceImage, new Int32Rect(sx0, sy0, sw, sh));
+                        var scaled = new TransformedBitmap(crop, new ScaleTransform(zoom, zoom));
+                        scaled.Freeze();
+                        var img = new Image
+                        {
+                            Source = scaled,
+                            Stretch = Stretch.Fill,
+                            Width = dw,
+                            Height = dh,
+                            Clip = a.MagnifierRound
+                                ? new EllipseGeometry(new Point(dw / 2, dh / 2), dw / 2, dh / 2)
+                                : new RectangleGeometry(new Rect(0, 0, dw, dh)),
+                        };
+                        Canvas.SetLeft(img, cx - dw / 2);
+                        Canvas.SetTop(img, cy - dh / 2);
+                        canvas.Children.Add(img);
+                    }
+                    catch { /* 裁剪失败只画框 */ }
+                }
+
+                // 镜头描边（居中外扩）
+                if (a.MagnifierRound)
+                {
+                    var el = new Ellipse { Width = dw, Height = dh, Stroke = brush, StrokeThickness = stroke };
+                    if (a.Dashed) el.StrokeDashArray = new DoubleCollection { 4, 3 };
+                    Canvas.SetLeft(el, cx - dw / 2); Canvas.SetTop(el, cy - dh / 2);
+                    canvas.Children.Add(el);
+                }
+                else
+                {
+                    var r = new Rectangle { Width = dw, Height = dh, Stroke = brush, StrokeThickness = stroke };
+                    if (a.Dashed) r.StrokeDashArray = new DoubleCollection { 4, 3 };
+                    Canvas.SetLeft(r, cx - dw / 2); Canvas.SetTop(r, cy - dh / 2);
+                    canvas.Children.Add(r);
+                }
                 break;
             }
 

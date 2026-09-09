@@ -14,6 +14,7 @@ public enum AnnotationTool
     Mosaic,      // 马赛克（区域像素化）
     Number,      // 序号（递增圆圈数字）
     Spotlight,   // 聚光灯（弱化周围区域，突出中间，可圆/方）
+    Magnifier,   // 放大镜（区域内容放大显示，可圆/方）
 }
 
 /// <summary>
@@ -54,6 +55,12 @@ public sealed class Annotation
 
     /// <summary>聚光灯形状：true=圆形，false=矩形。</summary>
     public bool SpotlightRound { get; init; }
+
+    /// <summary>放大镜放大倍数（默认 2 倍）。</summary>
+    public double Zoom { get; init; } = 2;
+
+    /// <summary>放大镜形状：true=圆形镜头，false=矩形。</summary>
+    public bool MagnifierRound { get; init; } = true;
 
     /// <summary>箭头形状（仅箭头工具有效）。默认实心三角。</summary>
     public ArrowStyle Arrow { get; init; } = ArrowStyle.Solid;

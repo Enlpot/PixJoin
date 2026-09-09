@@ -82,6 +82,45 @@ public static class AnnotationRenderer
                             dc.DrawText(MakeText(a.Text, a.Color, Math.Max(12, a.Thickness * 4)), new Point(a.X, a.Y));
                         break;
 
+                    case AnnotationTool.Magnifier:
+                    {
+                        double zoom = Math.Max(1.5, a.Zoom);
+                        double cx = a.X + a.W / 2, cy = a.Y + a.H / 2;
+                        double dw = Math.Max(2, a.W * zoom), dh = Math.Max(2, a.H * zoom);
+                        if (a.W > 1 && a.H > 1)
+                        {
+                            int sx0 = Math.Clamp((int)Math.Round(a.X), 0, w - 1);
+                            int sy0 = Math.Clamp((int)Math.Round(a.Y), 0, h - 1);
+                            int sw = Math.Clamp((int)Math.Round(a.W), 1, w - sx0);
+                            int sh = Math.Clamp((int)Math.Round(a.H), 1, h - sy0);
+                            var crop = new CroppedBitmap(image, new Int32Rect(sx0, sy0, sw, sh));
+                            var scaled = new TransformedBitmap(crop, new ScaleTransform(zoom, zoom));
+                            var clip = a.MagnifierRound
+                                ? (Geometry)new EllipseGeometry(new Point(dw / 2, dh / 2), dw / 2, dh / 2)
+                                : new RectangleGeometry(new Rect(0, 0, dw, dh));
+                            var v = new DrawingVisual();
+                            using (var dc2 = v.RenderOpen())
+                            {
+                                dc2.PushClip(clip);
+                                dc2.DrawImage(scaled, new Rect(cx - dw / 2, cy - dh / 2, dw, dh));
+                                dc2.Pop();
+                            }
+                            var magRtb = new RenderTargetBitmap((int)Math.Ceiling(dw), (int)Math.Ceiling(dh), 96, 96, PixelFormats.Pbgra32);
+                            magRtb.Render(v);
+                            magRtb.Freeze();
+                            dc.DrawImage(magRtb, new Rect(cx - dw / 2, cy - dh / 2, dw, dh));
+                        }
+                        var magBrush = new SolidColorBrush(a.Color);
+                        magBrush.Freeze();
+                        var magPen = new Pen(magBrush, a.Thickness);
+                        if (a.Dashed) magPen.DashStyle = DashStyles.Dash;
+                        if (a.MagnifierRound)
+                            dc.DrawEllipse(null, magPen, new Point(cx, cy), dw / 2, dh / 2);
+                        else
+                            dc.DrawRectangle(null, magPen, new Rect(cx - dw / 2, cy - dh / 2, dw, dh));
+                        break;
+                    }
+
                     case AnnotationTool.Spotlight:
                     {
                         var outer = new RectangleGeometry(new Rect(0, 0, w, h));
