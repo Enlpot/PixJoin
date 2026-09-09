@@ -122,6 +122,7 @@ internal static class Win32
 
     // ---- 长截图：向目标窗口发送滚动消息 ----
     public const uint WM_MOUSEWHEEL = 0x020A;
+    public const uint WM_HSCROLL = 0x0114;
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);

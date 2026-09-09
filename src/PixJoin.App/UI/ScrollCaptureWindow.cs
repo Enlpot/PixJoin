@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Windows;
@@ -12,24 +12,32 @@ using PixJoin.App.Native;
 namespace PixJoin.App.UI;
 
 /// <summary>
-/// 长截图（滚动捕获拼接）：点击目标窗口 → 自动逐屏滚动抓帧 → 底部/顶部条带匹配找重叠 → 无缝拼接。
-/// Esc 或滚动到底自动停止，完成后回调长图（供贴图）。
+/// 长截图（滚动捕获拼接）：点击目标窗口 → 自动逐屏滚动抓帧 → 条带匹配找重叠 → 无缝拼接。
+/// 支持垂直 / 水平两种滚动方向（Tab 切换），右侧实时预览拼接进度，Esc 停止。
+/// 完成后回调长图（供贴图）。
 /// </summary>
 public sealed class ScrollCaptureWindow : Window
 {
     public event Action<BitmapSource>? Completed;
 
-    private const int StripRows = 160;      // 重叠匹配条带行数
-    private const int SampleStep = 8;       // 行比较降采样步长（像素列）
+    private const int StripRows = 160;      // 重叠匹配条带行数 / 采样行数
+    private const int StripCols = 160;      // 横向匹配条带列数
+    private const int SampleStep = 8;       // 采样步长（像素）
     private const int ScrollDelta = -400;   // 每次滚动量（负=向下）
     private const int ScrollWaitMs = 200;   // 滚动后等待渲染
     private const int NoOverlapLimit = 2;   // 连续无重叠次数上限
+
+    private enum ScrollDir { Vertical, Horizontal }
 
     private readonly BitmapSource _initialShot;
     private IntPtr _targetWindow;
     private Rect _targetRect;                    // 目标窗口物理矩形
     private readonly TextBlock _hud;
+    private readonly Image _previewImg;
+    private readonly TextBlock _previewInfo;
     private readonly List<BitmapSource> _frames = new();
+    private ScrollDir _dir = ScrollDir.Vertical;
+    private int _noOverlapCount;
     private bool _stop;
 
     public ScrollCaptureWindow(BitmapSource initialShot)
@@ -54,7 +62,7 @@ public sealed class ScrollCaptureWindow : Window
 
         _hud = new TextBlock
         {
-            Text = "长截图：点击要滚动的窗口区域开始自动滚动捕获\nEsc 停止并完成拼接",
+            Text = "长截图：点击要滚动的窗口区域开始自动滚动捕获\nTab 切换 垂直/水平 方向（当前：垂直）\nEsc 停止并完成拼接",
             FontSize = 16,
             Foreground = Brushes.White,
             Background = new SolidColorBrush(Color.FromArgb(0xDD, 0x00, 0x00, 0x00)),
@@ -64,6 +72,45 @@ public sealed class ScrollCaptureWindow : Window
             Margin = new Thickness(0, 12, 0, 0),
         };
         root.Children.Add(_hud);
+
+        // 右侧实时拼接预览
+        var right = new DockPanel
+        {
+            Width = 280,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Background = new SolidColorBrush(Color.FromArgb(0xE6, 0x1E, 0x1E, 0x1E)),
+        };
+        var previewTitle = new TextBlock
+        {
+            Text = "拼接预览",
+            FontSize = 14,
+            Foreground = Brushes.White,
+            Margin = new Thickness(10, 8, 10, 6),
+        };
+        DockPanel.SetDock(previewTitle, Dock.Top);
+        right.Children.Add(previewTitle);
+        _previewImg = new Image
+        {
+            Stretch = Stretch.Uniform,
+            MaxWidth = 260,
+            Margin = new Thickness(10, 0, 10, 0),
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        _previewImg.SetValue(Panel.ZIndexProperty, 10);
+        right.Children.Add(_previewImg);
+        _previewInfo = new TextBlock
+        {
+            Text = "尚未开始",
+            FontSize = 12,
+            Foreground = Brushes.LightGray,
+            Margin = new Thickness(10, 6, 10, 8),
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        DockPanel.SetDock(_previewInfo, Dock.Bottom);
+        right.Children.Add(_previewInfo);
+        root.Children.Add(right);
+
         Content = root;
 
         MouseLeftButtonDown += (_, _) => { if (!_stop) _ = StartScrollAsync(); };
@@ -73,6 +120,12 @@ public sealed class ScrollCaptureWindow : Window
             {
                 _stop = true;
                 Close();
+            }
+            else if (e.Key == Key.Tab)
+            {
+                _dir = _dir == ScrollDir.Vertical ? ScrollDir.Horizontal : ScrollDir.Vertical;
+                _hud.Text = $"长截图：点击要滚动的窗口区域开始自动滚动捕获\nTab 切换方向（当前：{(_dir == ScrollDir.Vertical ? "垂直" : "水平")}）\nEsc 停止并完成拼接";
+                e.Handled = true;
             }
         };
     }
@@ -99,12 +152,20 @@ public sealed class ScrollCaptureWindow : Window
         _frames.Clear();
         _frames.Add(first);
         _noOverlapCount = 0;
-        _hud.Text = $"正在滚动捕获：{_frames.Count} 帧…（Esc 停止）";
+        UpdateHud();
 
         while (!_stop)
         {
-            Win32.PostMessage(_targetWindow, Win32.WM_MOUSEWHEEL,
-                new IntPtr((ScrollDelta & 0xFFFF) << 16), IntPtr.Zero);
+            if (_dir == ScrollDir.Vertical)
+            {
+                Win32.PostMessage(_targetWindow, Win32.WM_MOUSEWHEEL,
+                    new IntPtr((ScrollDelta & 0xFFFF) << 16), IntPtr.Zero);
+            }
+            else
+            {
+                // 水平滚动：向右翻一页（SB_PAGERIGHT = 3）
+                Win32.PostMessage(_targetWindow, Win32.WM_HSCROLL, new IntPtr(3), IntPtr.Zero);
+            }
             await Task.Delay(ScrollWaitMs);
             if (_stop) break;
 
@@ -113,7 +174,7 @@ public sealed class ScrollCaptureWindow : Window
 
             var cur = shot.Bitmap;
             var prev = _frames[^1];
-            // 宽度变化（滚动条出现/消失等）→ 跳过该帧，避免拼接错位/越界
+            // 尺寸变化（滚动条出现/消失等）→ 跳过该帧，避免拼接错位/越界
             if (cur.PixelWidth != prev.PixelWidth || cur.PixelHeight != prev.PixelHeight)
             {
                 _noOverlapCount++;
@@ -121,7 +182,9 @@ public sealed class ScrollCaptureWindow : Window
                 continue;
             }
 
-            int overlap = FindOverlap(prev, cur);
+            int overlap = _dir == ScrollDir.Vertical
+                ? FindOverlapVertical(prev, cur)
+                : FindOverlapHorizontal(prev, cur);
 
             if (overlap < 10)
             {
@@ -132,22 +195,37 @@ public sealed class ScrollCaptureWindow : Window
 
             _noOverlapCount = 0;
             _frames.Add(cur);
-            _hud.Text = $"正在滚动捕获：{_frames.Count} 帧…（Esc 停止）";
+            UpdateHud();
+
+            // 每 2 帧刷新一次右侧实时预览（Image 自动等比缩略显示）
+            if (_frames.Count % 2 == 0)
+            {
+                try
+                {
+                    var canvas = BuildCanvas();
+                    _previewImg.Source = canvas;
+                    _previewInfo.Text = $"{_frames.Count} 帧 · {canvas.PixelWidth}×{canvas.PixelHeight}";
+                }
+                catch { /* 预览失败不影响主流程 */ }
+            }
         }
 
         Finish();
     }
 
-    private int _noOverlapCount;
+    private void UpdateHud()
+    {
+        string dirText = _dir == ScrollDir.Vertical ? "垂直" : "水平";
+        _hud.Text = $"正在{dirText}滚动捕获：{_frames.Count} 帧…（Esc 停止）";
+    }
 
-    /// <summary>找 prev 底部与 cur 顶部的重叠行数；SSD 最小，失败返回 -1。</summary>
-    private static int FindOverlap(BitmapSource prev, BitmapSource cur)
+    /// <summary>垂直：找 prev 底部与 cur 顶部的重叠行数；SSD 最小，失败返回 -1。</summary>
+    private static int FindOverlapVertical(BitmapSource prev, BitmapSource cur)
     {
         int pw = prev.PixelWidth, ph = prev.PixelHeight;
         int cw = cur.PixelWidth, ch = cur.PixelHeight;
         if (pw < 10 || cw < 10 || ph < 20 || ch < 20) return -1;
 
-        // 行均值降采样：prev 底部条带、cur 顶部条带
         int rows = Math.Min(StripRows, Math.Min(ph, ch) / 2);
         int cols = Math.Min(pw, cw) / SampleStep;
         var prevRows = RowMeans(prev, ph - rows, rows, cols);
@@ -173,7 +251,41 @@ public sealed class ScrollCaptureWindow : Window
             if (score < bestScore) { bestScore = score; bestK = k; }
         }
 
-        // 阈值：匹配差过大视为无重叠（页面跳变/动画）
+        return bestScore <= 900.0 ? bestK : -1;
+    }
+
+    /// <summary>水平：找 prev 右缘与 cur 左缘的重叠列数。</summary>
+    private static int FindOverlapHorizontal(BitmapSource prev, BitmapSource cur)
+    {
+        int pw = prev.PixelWidth, ph = prev.PixelHeight;
+        int cw = cur.PixelWidth, ch = cur.PixelHeight;
+        if (pw < 20 || cw < 20 || ph < 10 || ch < 10) return -1;
+
+        int cols = Math.Min(StripCols, Math.Min(pw, cw) / 2);
+        int rows = Math.Min(StripRows, Math.Min(ph, ch) / SampleStep);
+        var prevCols = ColumnMeans(prev, pw - cols, cols, rows);
+        var curCols = ColumnMeans(cur, 0, cols, rows);
+        if (prevCols is null || curCols is null) return -1;
+
+        int bestK = -1;
+        double bestScore = double.MaxValue;
+        for (int k = 10; k <= cols; k++)
+        {
+            double score = 0;
+            for (int i = 0; i < k; i++)
+            {
+                var a = prevCols[cols - k + i];
+                var b = curCols[i];
+                for (int j = 0; j < rows; j++)
+                {
+                    double d = a[j] - b[j];
+                    score += d * d;
+                }
+            }
+            score /= k * rows;
+            if (score < bestScore) { bestScore = score; bestK = k; }
+        }
+
         return bestScore <= 900.0 ? bestK : -1;
     }
 
@@ -206,7 +318,37 @@ public sealed class ScrollCaptureWindow : Window
         return result;
     }
 
-    /// <summary>拼接所有帧（重叠对齐）→ 完成回调。</summary>
+    /// <summary>取区域列均值（每 SampleStep 行取一像素）——用于水平拼接匹配。</summary>
+    private static float[][]? ColumnMeans(BitmapSource src, int startCol, int cols, int rows)
+    {
+        var conv = src.Format == PixelFormats.Bgra32 || src.Format == PixelFormats.Pbgra32
+            ? src
+            : new FormatConvertedBitmap(src, PixelFormats.Bgra32, null, 0);
+        int w = conv.PixelWidth, h = conv.PixelHeight;
+        var buf = new byte[w * h * 4];
+        try
+        {
+            conv.CopyPixels(buf, w * 4, 0);
+        }
+        catch { return null; }
+
+        var result = new float[cols][];
+        for (int c = 0; c < cols; c++)
+        {
+            var col = new float[rows];
+            int colPx = startCol + c;
+            if (colPx < 0 || colPx >= w) return null;
+            for (int r = 0; r < rows; r++)
+            {
+                int idx = (r * SampleStep * w + colPx) * 4;
+                col[r] = buf[idx] * 0.114f + buf[idx + 1] * 0.587f + buf[idx + 2] * 0.299f;
+            }
+            result[c] = col;
+        }
+        return result;
+    }
+
+    /// <summary>拼接所有帧（按方向重叠对齐）→ 完成回调。</summary>
     private void Finish()
     {
         if (_stop && _frames.Count <= 1)
@@ -231,14 +373,19 @@ public sealed class ScrollCaptureWindow : Window
     /// <summary>字节数组拼接：Bgra32 全程，最终生成 BitmapSource。</summary>
     private BitmapSource BuildCanvas()
     {
+        return _dir == ScrollDir.Vertical ? BuildCanvasVertical() : BuildCanvasHorizontal();
+    }
+
+    private BitmapSource BuildCanvasVertical()
+    {
         // 防御：即使帧宽不同也按最大宽度左侧对齐，行内右侧留空，杜绝越界
         int totalW = _frames[0].PixelWidth;
-        int totalH = _frames[0].PixelHeight;
         for (int i = 1; i < _frames.Count; i++) totalW = Math.Max(totalW, _frames[i].PixelWidth);
         var overlaps = new int[_frames.Count - 1];
+        int totalH = _frames[0].PixelHeight;
         for (int i = 1; i < _frames.Count; i++)
         {
-            int ov = Math.Max(10, FindOverlap(_frames[i - 1], _frames[i]));
+            int ov = Math.Max(10, FindOverlapVertical(_frames[i - 1], _frames[i]));
             overlaps[i - 1] = ov;
             totalH += _frames[i].PixelHeight - ov;
         }
@@ -249,13 +396,45 @@ public sealed class ScrollCaptureWindow : Window
         {
             var px = ToBgra(_frames[i]);
             int w = _frames[i].PixelWidth, h = _frames[i].PixelHeight;
-            if (w > totalW) w = totalW;   // 极端防御
+            if (w > totalW) w = totalW;
             int startRow = i == 0 ? 0 : overlaps[i - 1];
             for (int y = startRow; y < h; y++)
             {
                 Buffer.BlockCopy(px, (y * _frames[i].PixelWidth) * 4, dst, ((writeY + y - startRow) * totalW) * 4, w * 4);
             }
             writeY += h - startRow;
+        }
+
+        return BitmapSource.Create(totalW, totalH, 96, 96, PixelFormats.Bgra32, null, dst, totalW * 4);
+    }
+
+    private BitmapSource BuildCanvasHorizontal()
+    {
+        int totalH = _frames[0].PixelHeight;
+        for (int i = 1; i < _frames.Count; i++) totalH = Math.Max(totalH, _frames[i].PixelHeight);
+        var overlaps = new int[_frames.Count - 1];
+        int totalW = _frames[0].PixelWidth;
+        for (int i = 1; i < _frames.Count; i++)
+        {
+            int ov = Math.Max(10, FindOverlapHorizontal(_frames[i - 1], _frames[i]));
+            overlaps[i - 1] = ov;
+            totalW += _frames[i].PixelWidth - ov;
+        }
+
+        var dst = new byte[totalW * totalH * 4];
+        int writeX = 0;
+        for (int i = 0; i < _frames.Count; i++)
+        {
+            var px = ToBgra(_frames[i]);
+            int w = _frames[i].PixelWidth, h = _frames[i].PixelHeight;
+            if (h > totalH) h = totalH;
+            int startCol = i == 0 ? 0 : overlaps[i - 1];
+            int copyW = w - startCol;
+            for (int y = 0; y < h; y++)
+            {
+                Buffer.BlockCopy(px, (y * w + startCol) * 4, dst, (y * totalW + writeX) * 4, copyW * 4);
+            }
+            writeX += copyW;
         }
 
         return BitmapSource.Create(totalW, totalH, 96, 96, PixelFormats.Bgra32, null, dst, totalW * 4);
