@@ -14,7 +14,7 @@
     <RootNamespace>PixJoin.App</RootNamespace>
     <AssemblyName>PixJoin</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.5.0</Version>
+    <Version>0.6.0</Version>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
 

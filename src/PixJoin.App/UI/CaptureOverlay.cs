@@ -13,7 +13,7 @@ using PixJoin.Core.Services;
 
 namespace PixJoin.App.UI;
 
-public enum CaptureAction { Pin, Copy, Save, Annotate }
+public enum CaptureAction { Pin, Copy, Save, Annotate, ScrollCapture }
 
 public sealed record CaptureResult(BitmapSource Bitmap, Rect PhysicalRect, CaptureAction Action);
 
@@ -93,6 +93,33 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
     private Point? _arrowLivePt;           // 箭头中点控制点拖动中的实时位置（跟手显示）
     private double _arrowDragT = 0.5;      // 箭头中点控制点在曲线上锁定的参数 t（反解保证 B(t)=鼠标，控制点恒骑线）
     private bool _dragLive;                 // 拖动中（控制点/标注本体）：跳过调试文本与距离计算，保证跟手
+    private bool _pickingColor;             // 取色模式：按 C 切换，点击复制当前像素色
+    private bool _windowCapture;            // 窗口捕获模式：Tab 切换，悬停高亮，单击截取窗口
+
+    // ---- 选区拉伸（截图画完选区后可拖动边缘/角落调整） ----
+    private enum SelDrag { None, Corner, Edge }
+    private SelDrag _selDrag = SelDrag.None;
+    private int _selDragIndex;
+    private bool _selDragging;
+    private Rect _selOrigRect;
+    private Rect? _winRect;                 // 当前高亮窗口物理矩形
+    private string _winName = "";
+    private readonly Rectangle _winHighlight = new()
+    {
+        Stroke = new SolidColorBrush(Color.FromRgb(0x3B, 0x82, 0xF6)),
+        StrokeThickness = 2,
+        StrokeDashArray = new DoubleCollection { 4, 3 },
+        Fill = new SolidColorBrush(Color.FromArgb(0x18, 0x3B, 0x82, 0xF6)),
+        Visibility = Visibility.Collapsed,
+    };
+    private readonly Border _winNameText = new()
+    {
+        Background = new SolidColorBrush(Color.FromArgb(0xE6, 0x3B, 0x82, 0xF6)),
+        Padding = new Thickness(6, 2, 6, 2),
+        CornerRadius = new CornerRadius(2),
+        Visibility = Visibility.Collapsed,
+    };
+    private readonly TextBlock _winNameLabel = new() { FontSize = 12, Foreground = Brushes.White };
 
     // ---- [DEBUG] 拖动性能日志：内存队列，OnLeftUp 一次性写盘，避免日志 IO 干扰测量 ----
     private static readonly List<string> _dbgLog = new();
@@ -200,8 +227,87 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         Scene.Children.Add(_hud);
         Scene.Children.Add(_magnifier);
         Scene.Children.Add(_toolbarHost);
+        Scene.Children.Add(_winHighlight);
+        _winNameText.Child = _winNameLabel;
+        Scene.Children.Add(_winNameText);
 
         HideAll();
+    }
+
+    /// <summary>窗口捕获：找光标下最顶层可见窗口，画高亮 + 标题。</summary>
+    private void UpdateWindowCapture(Point cursor)
+    {
+        var hit = FindTopWindow(cursor);
+        if (hit is null) { _winRect = null; _winHighlight.Visibility = Visibility.Collapsed; _winNameText.Visibility = Visibility.Collapsed; return; }
+
+        var (hWnd, rect, title) = hit.Value;
+        _winRect = rect;
+        _winName = title;
+        _winHighlight.Width = Math.Max(1, rect.Width);
+        _winHighlight.Height = Math.Max(1, rect.Height);
+        Canvas.SetLeft(_winHighlight, rect.X);
+        Canvas.SetTop(_winHighlight, rect.Y);
+        _winHighlight.Visibility = Visibility.Visible;
+
+        _winNameLabel.Text = string.IsNullOrWhiteSpace(title) ? "（无标题窗口）" : title.Trim();
+        _winNameText.Visibility = Visibility.Visible;
+        Canvas.SetLeft(_winNameText, rect.X);
+        Canvas.SetTop(_winNameText, Math.Max(0, rect.Y - 24));
+        _ = hWnd;
+    }
+
+    /// <summary>光标下面积最小的可见顶层窗口（排除自身与系统工具窗口）。</summary>
+    private (IntPtr hWnd, Rect rect, string title)? FindTopWindow(Point cursor)
+    {
+        IntPtr self = Handle;
+        (IntPtr hWnd, Rect rect, string title)? best = null;
+        double bestArea = double.MaxValue;
+        Win32.EnumWindows((hWnd, _) =>
+        {
+            if (hWnd == self || hWnd == IntPtr.Zero) return true;
+            if (!Win32.IsWindowVisible(hWnd)) return true;
+            if (!Win32.GetWindowRect(hWnd, out var r)) return true;
+            if (r.Left >= r.Right || r.Top >= r.Bottom) return true;
+            if (cursor.X < r.Left || cursor.X >= r.Right || cursor.Y < r.Top || cursor.Y >= r.Bottom) return true;
+
+            var cls = new System.Text.StringBuilder(256);
+            Win32.GetClassName(hWnd, cls, 256);
+            string cc = cls.ToString();
+            if (cc is "Shell_TrayWnd" or "Progman" or "WorkerW" or "CiceroUIWndFrame"
+                or "Windows.UI.Core.CoreWindow" or "SysShadow" or "ToolbarWindow32" or "Button")
+                return true;
+
+            double area = (double)(r.Right - r.Left) * (r.Bottom - r.Top);
+            if (area < bestArea)
+            {
+                var t = new System.Text.StringBuilder(512);
+                Win32.GetWindowText(hWnd, t, 512);
+                best = (hWnd, new Rect(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top), t.ToString());
+                bestArea = area;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return best;
+    }
+
+    private string _lastPickedHex = "#FFFFFF";
+
+    private void CopyPickedColor()
+    {
+        try
+        {
+            System.Windows.Clipboard.SetText(_lastPickedHex);
+        }
+        catch { }
+    }
+
+    /// <summary>以窗口矩形作为选区完成「贴图」。</summary>
+    private CaptureAction PinWindow(Rect wr)
+    {
+        // 与选区完成一致：按物理矩形裁切
+        _selectionRect = wr;
+        _hasSelection = true;
+        return CaptureAction.Pin;
     }
 
     private static Point GetCursorPhysical()
@@ -214,10 +320,44 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
 
     private void OnLeftDown(object sender, MouseButtonEventArgs e)
     {
+        if (_pickingColor)
+        {
+            CopyPickedColor();
+            _pickingColor = false;
+            RefreshCursorVisuals(GetCursorPhysical());
+            e.Handled = true;
+            return;
+        }
+
+        // 窗口捕获模式：单击 = 截取悬停高亮的窗口
+        if (_windowCapture)
+        {
+            if (_winRect is { } wr)
+            {
+                Finish(PinWindow(wr));
+                e.Handled = true;
+                return;
+            }
+            e.Handled = true;
+            return;
+        }
+
         if (_hasSelection)
         {
             var p = GetCursorPhysical();
             var rel = new Point(p.X - _selectionRect.X, p.Y - _selectionRect.Y);
+
+            // 0. 选区边缘/角落手柄：拉伸选区
+            var sh = HitSelectionHandle(rel);
+            if (sh != SelDrag.None)
+            {
+                _selDrag = sh;
+                _selOrigRect = _selectionRect;
+                _selDragging = true;
+                CaptureMouse();
+                e.Handled = true;
+                return;
+            }
 
             // 1. 有选中标注：先查控制点，再查本体拖动
             if (_selectedIndex is { } si)
@@ -284,8 +424,20 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
 
     private void OnMouseMove(object sender, MouseEventArgs e)
     {
+        if (_windowCapture)
+        {
+            UpdateWindowCapture(GetCursorPhysical());
+            return;
+        }
+
         if (_hasSelection)
         {
+            if (_selDragging)
+            {
+                UpdateSelDrag(GetCursorPhysical());
+                return;
+            }
+
             // 悬停光标：控制点/标注本体给出对应提示标记
             UpdateHoverCursor(new Point(GetCursorPhysical().X - _selectionRect.X, GetCursorPhysical().Y - _selectionRect.Y));
 
@@ -348,6 +500,15 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
 
     private void OnLeftUp(object sender, MouseButtonEventArgs e)
     {
+        if (_selDragging)
+        {
+            _selDragging = false;
+            _selDrag = SelDrag.None;
+            ReleaseMouseCapture();
+            e.Handled = true;
+            return;
+        }
+
         if (_activeHandle is { })
         {
             _activeHandle = null;
@@ -440,8 +601,30 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
 
     private void OnKeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key == Key.Tab)
+        {
+            // 无选区时切换窗口捕获模式；有选区时进入后单击直接截取该窗口
+            _windowCapture = !_windowCapture;
+            _winRect = null;
+            _winHighlight.Visibility = Visibility.Collapsed;
+            Cursor = _windowCapture ? Cursors.Hand : Cursors.Cross;
+            if (_windowCapture) UpdateWindowCapture(GetCursorPhysical());
+            e.Handled = true;
+            return;
+        }
+
         if (e.Key == Key.Escape)
         {
+            if (_windowCapture)
+            {
+                _windowCapture = false;
+                _winRect = null;
+                _winHighlight.Visibility = Visibility.Collapsed;
+                Cursor = Cursors.Cross;
+                e.Handled = true;
+                return;
+            }
+
             // 标注模式下 ESC 优先退出标注工具选择（再次 ESC 才逐级取消）
             if (_hasSelection && _annotTool.HasValue)
             {
@@ -466,7 +649,15 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         }
         else if (e.Key == Key.C && _hasSelection && !_annotDrawing)
         {
-            Finish(CaptureAction.Copy);
+            if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
+            {
+                Finish(CaptureAction.Copy);   // Ctrl+C = 复制截图
+            }
+            else
+            {
+                _pickingColor = !_pickingColor;   // C = 取色（再按关闭）
+                RefreshCursorVisuals(GetCursorPhysical());
+            }
             e.Handled = true;
         }
         else if (e.Key == Key.S && _hasSelection && !_annotDrawing)
@@ -505,6 +696,18 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
     /// <summary>根据悬停位置设置光标：控制点=对应拉伸方向，标注本体=四向移动，否则恢复。</summary>
     private void UpdateHoverCursor(Point rel)
     {
+        // 选区边缘/角落：拉伸光标（优先于标注）
+        var sh = HitSelectionHandle(rel);
+        if (sh != SelDrag.None)
+        {
+            Cursor = sh switch
+            {
+                SelDrag.Corner => (_selDragIndex is 0 or 3) ? Cursors.SizeNWSE : Cursors.SizeNESW,
+                _ => (_selDragIndex is 0 or 2) ? Cursors.SizeNS : Cursors.SizeWE,
+            };
+            return;
+        }
+
         if (_selectedIndex is { } si && si >= 0 && si < _annotations.Count)
         {
             var hh = AnnotationHandles.HitTest(AnnotationHandles.Get(_annotations[si], _arrowDragT), rel);
@@ -526,6 +729,59 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
             if (b.Contains(rel)) { Cursor = Cursors.SizeAll; return; }
         }
         Cursor = _annotTool.HasValue ? Cursors.Cross : Cursors.Arrow;
+    }
+
+    /// <summary>命中选区拉伸手柄（rel 为相对选区左上角的物理坐标）。</summary>
+    private SelDrag HitSelectionHandle(Point rel)
+    {
+        double w = _selectionRect.Width, h = _selectionRect.Height;
+        const double tol = 7;
+        (double, double)[] corners = { (0, 0), (w, 0), (0, h), (w, h) };
+        for (int i = 0; i < 4; i++)
+            if (Dist(rel, new Point(corners[i].Item1, corners[i].Item2)) <= tol) { _selDragIndex = i; return SelDrag.Corner; }
+        (double, double)[] edges = { (w / 2, 0), (w, h / 2), (w / 2, h), (0, h / 2) };
+        for (int i = 0; i < 4; i++)
+            if (Dist(rel, new Point(edges[i].Item1, edges[i].Item2)) <= tol) { _selDragIndex = i; return SelDrag.Edge; }
+        return SelDrag.None;
+    }
+
+    private static double Dist(Point a, Point b)
+    {
+        double dx = a.X - b.X, dy = a.Y - b.Y;
+        return Math.Sqrt(dx * dx + dy * dy);
+    }
+
+    /// <summary>按手柄拖动更新选区（锚定对角/对边，最小 6px）。</summary>
+    private void UpdateSelDrag(Point p)
+    {
+        var r = _selOrigRect;
+        double x = r.X, y = r.Y, right = x + r.Width, bottom = y + r.Height;
+        const double min = 6;
+        switch (_selDrag)
+        {
+            case SelDrag.Corner:
+                switch (_selDragIndex)
+                {
+                    case 0: x = Math.Min(p.X, right - min); y = Math.Min(p.Y, bottom - min); break;
+                    case 1: y = Math.Min(p.Y, bottom - min); right = Math.Max(p.X, x + min); break;
+                    case 2: x = Math.Min(p.X, right - min); bottom = Math.Max(p.Y, y + min); break;
+                    default: right = Math.Max(p.X, x + min); bottom = Math.Max(p.Y, y + min); break;
+                }
+                break;
+            case SelDrag.Edge:
+                switch (_selDragIndex)
+                {
+                    case 0: y = Math.Min(p.Y, bottom - min); break;
+                    case 1: right = Math.Max(p.X, x + min); break;
+                    case 2: bottom = Math.Max(p.Y, y + min); break;
+                    default: x = Math.Min(p.X, right - min); break;
+                }
+                break;
+        }
+        _selectionRect = new Rect(x, y, right - x, bottom - y);
+        UpdateSelection();
+        ShowToolbar(_selectionRect);
+        RefreshAnnotationLayer();   // 标注相对坐标不变 → 视觉随选区移动
     }
 
     private Rect CurrentRect()
@@ -648,7 +904,26 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
                 ? px
                 : new FormatConvertedBitmap(px, PixelFormats.Bgra32, null, 0);
             conv.CopyPixels(buf, 4, 0);
-            _magText.Text = $"#{buf[2]:X2}{buf[1]:X2}{buf[0]:X2}  ({cursor.X}, {cursor.Y})";
+            string hex = $"#{buf[2]:X2}{buf[1]:X2}{buf[0]:X2}";
+            if (_pickingColor)
+            {
+                // 取色模式：色卡 + 点击复制提示
+                var chip = new Border
+                {
+                    Width = 18, Height = 18,
+                    Background = new SolidColorBrush(Color.FromRgb(buf[2], buf[1], buf[0])),
+                    BorderBrush = new SolidColorBrush(Color.FromArgb(0xE0, 0xFF, 0xFF, 0xFF)),
+                    BorderThickness = new Thickness(1),
+                    Margin = new Thickness(0, 2, 0, 0),
+                };
+                _magOverlay.Children.Add(chip);
+                _magText.Text = $"{hex}  {buf[2]:D3},{buf[1]:D3},{buf[0]:D3}  点击复制";
+            }
+            else
+            {
+                _magText.Text = $"{hex}  ({cursor.X}, {cursor.Y})";
+            }
+            _lastPickedHex = hex;
         }
 
         double mw = _magnifier.ActualWidth > 0 ? _magnifier.ActualWidth : MagSource * MagZoom + 40;
@@ -805,6 +1080,7 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         _toolbar.Children.Add(thickBtn);
 
         _toolbar.Children.Add(MakeSeparator(scale));
+        _toolbar.Children.Add(MakeActionButton("长截图", CaptureAction.ScrollCapture, scale));
         _toolbar.Children.Add(MakeActionButton("贴图", CaptureAction.Pin, scale, primary: true));
         _toolbar.Children.Add(MakeActionButton("复制", CaptureAction.Copy, scale));
         _toolbar.Children.Add(MakeActionButton("保存", CaptureAction.Save, scale));

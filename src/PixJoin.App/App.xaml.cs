@@ -358,6 +358,27 @@ public partial class App : Application
             case CaptureAction.Save:
                 SaveBitmap(result.Bitmap);
                 break;
+
+            case CaptureAction.ScrollCapture:
+                StartScrollCapture(result.Bitmap);
+                break;
+        }
+    }
+
+    /// <summary>长截图：以当前选区为初始帧打开滚动捕获窗口，完成后贴图。</summary>
+    private void StartScrollCapture(BitmapSource initial)
+    {
+        try
+        {
+            var win = new ScrollCaptureWindow(initial);
+            win.Completed += bmp => _stickers.CreateSticker(bmp, new System.Windows.Point(
+                SystemParameters.VirtualScreenLeft + 80, SystemParameters.VirtualScreenTop + 80));
+            win.Show();
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show($"长截图启动失败：{ex.Message}", "PixJoin",
+                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
         }
     }
 
@@ -402,6 +423,21 @@ public partial class App : Application
         var fromFile = new ToolStripMenuItem("从文件贴图…");
         fromFile.Click += (_, _) => PinFromFile();
         menu.Items.Add(fromFile);
+
+        var pickColor = new ToolStripMenuItem("取色…");
+        pickColor.Click += (_, _) =>
+        {
+            try
+            {
+                new PickColorWindow().Show();
+            }
+            catch (Exception ex)
+            {
+                System.Windows.MessageBox.Show($"取色失败：{ex.Message}", "PixJoin",
+                    System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+            }
+        };
+        menu.Items.Add(pickColor);
 
         menu.Items.Add(new ToolStripSeparator());
 

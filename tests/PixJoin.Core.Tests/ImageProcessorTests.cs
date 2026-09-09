@@ -74,6 +74,64 @@ public static class ImageProcessorTests
             var bot = PixelAt(f, 2, 6).R;
             Check.True(top > 200 && bot < 50, "垂直翻转：上下交换");
         }
+
+        // 亮度：中灰提亮/压暗方向正确
+        {
+            var gray = TestBitmap.Solid(4, 4, Color.FromRgb(128, 128, 128));
+            var up = ImageProcessor.AdjustBrightness(gray, 1.6f);
+            var down = ImageProcessor.AdjustBrightness(gray, 0.4f);
+            Check.True(PixelAt(up, 2, 2).R > 150, $"亮度增强（实际 {PixelAt(up, 2, 2).R}）");
+            Check.True(PixelAt(down, 2, 2).R < 90, $"亮度降低（实际 {PixelAt(down, 2, 2).R}）");
+        }
+
+        // 对比度：低对比度 → 灰面（128±差距收窄）
+        {
+            var grad = Gradient(8, 4);   // 左黑右白
+            var low = ImageProcessor.AdjustContrast(grad, 0.2f);
+            Check.True(PixelAt(low, 1, 2).R > 20 && PixelAt(low, 6, 2).R < 220, "对比度降低：两端向中间收拢");
+        }
+
+        // 饱和度：降到 0 → 彩色基本变灰（各通道接近，亮度显著下降）
+        {
+            var red = TestBitmap.Solid(4, 4, Colors.Red);
+            var desat = ImageProcessor.AdjustSaturation(red, 0f);
+            var px = PixelAt(desat, 2, 2);
+            Check.True(Math.Abs(px.R - px.G) <= 4 && Math.Abs(px.G - px.B) <= 4 && px.R < 100,
+                $"去饱和：纯红基本变灰（实际 {px.R},{px.G},{px.B}）");
+        }
+
+        // 裁剪：只保留区域，尺寸正确
+        {
+            var grad = Gradient(16, 8);
+            var c = ImageProcessor.Crop(grad, new Rect(4, 2, 8, 4));
+            Check.True(c.PixelWidth == 8 && c.PixelHeight == 4, "裁剪：尺寸正确");
+            var left = PixelAt(c, 1, 2).R;   // 原 x=5 → 浅灰
+            Check.True(left is > 60 and < 120, $"裁剪：内容对应（实际 {left}）");
+        }
+
+        // 边框：尺寸扩大、边色正确、中心内容不变
+        {
+            var red = TestBitmap.Solid(6, 6, Colors.Red);
+            var b = ImageProcessor.AddBorder(red, 3, Colors.Yellow);
+            Check.True(b.PixelWidth == 12 && b.PixelHeight == 12, "边框：尺寸 = 原图 + 2×厚度");
+            Check.True(PixelAt(b, 1, 1) == Colors.Yellow, "边框：边色正确");
+            Check.True(PixelAt(b, 6, 6) == Colors.Red, "边框：中心原图保留");
+        }
+
+        // 水印：右下角叠加文字（大图能放下），左上角保持原样
+        {
+            var white = TestBitmap.Solid(200, 120, Colors.White);
+            var wm = ImageProcessor.AddWatermark(white, "PixJoin", 14, 0.8, Colors.Red);
+            bool bottomChanged = false;
+            for (int y = 90; y < 120; y++)
+            for (int x = 130; x < 200; x++)
+            {
+                var p = PixelAt(wm, x, y);
+                if (p.G < 250 || p.B < 250) { bottomChanged = true; break; }
+            }
+            Check.True(bottomChanged, "水印：右下角出现文字像素");
+            Check.True(PixelAt(wm, 3, 3) == Colors.White, "水印：左上角保持原样");
+        }
     }
 
     private static Color PixelAt(BitmapSource bmp, int x, int y)

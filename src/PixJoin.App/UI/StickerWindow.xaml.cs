@@ -61,6 +61,15 @@ public sealed partial class StickerWindow : Window
     private double _annotArrowT = 0.5;       // 箭头弧顶控制点在曲线上的锁定参数 t
     private bool _annotDashed;                // 默认线型（虚线开关，作用于新标注/选中标注，与截图一致）
     private ArrowStyle _annotArrowStyle = ArrowStyle.Solid;   // 默认箭头样式
+
+    // ---- 裁剪模式（贴图内交互裁剪：遮罩 + 手柄拖动，Enter/双击确认，Esc 取消） ----
+    private bool _cropMode;
+    private Rect _cropRect;                   // 裁剪框（窗口 DIP）
+    private enum CropDrag { None, Move, Corner, Edge }
+    private CropDrag _cropDrag = CropDrag.None;
+    private int _cropDragIndex;
+    private Point _cropStart;                 // 拖动起点（DIP）
+    private Rect _cropOrig;                   // 拖动前裁剪框
     private int _annotNumberSeq;
 
     public Sticker Sticker { get; }
@@ -188,6 +197,14 @@ public sealed partial class StickerWindow : Window
     {
         if (e.ChangedButton != MouseButton.Left) return;
 
+        // 裁剪模式：拖动裁剪框
+        if (_cropMode)
+        {
+            HandleCropDown(e.GetPosition(this));
+            e.Handled = true;
+            return;
+        }
+
         // 标注模式：全部交给标注绘制
         if (_annotating)
         {
@@ -226,6 +243,12 @@ public sealed partial class StickerWindow : Window
 
     private void OnBodyMouseMove(object sender, MouseEventArgs e)
     {
+        if (_cropMode)
+        {
+            HandleCropMove(e.GetPosition(this));
+            return;
+        }
+
         if (_annotating)
         {
             HandleAnnotationMove(e.GetPosition(this));
@@ -245,6 +268,13 @@ public sealed partial class StickerWindow : Window
 
     private void OnBodyMouseUp(object sender, MouseButtonEventArgs e)
     {
+        if (_cropMode)
+        {
+            HandleCropUp(e.GetPosition(this));
+            e.Handled = true;
+            return;
+        }
+
         if (_annotating)
         {
             HandleAnnotationUp(e.GetPosition(this));
@@ -293,6 +323,9 @@ public sealed partial class StickerWindow : Window
 
     private void OnMouseWheel(object sender, MouseWheelEventArgs e)
     {
+        // 裁剪模式：滚轮不缩放
+        if (_cropMode) { e.Handled = true; return; }
+
         // 标注模式：滚轮只调整选中标注的粗细（±1，clamp 1~20），与截图一致
         if (_annotating)
         {
@@ -443,12 +476,26 @@ public sealed partial class StickerWindow : Window
         AddImageOp(imgOps, "模糊", ImageProcessor.Blur);
         AddImageOp(imgOps, "锐化", ImageProcessor.Sharpen);
         imgOps.Items.Add(new Separator());
+        var adjust = new MenuItem { Header = "亮度 / 对比度 / 饱和度…" };
+        adjust.Click += (_, _) => ImageOpDialogs.ShowAdjust(this);
+        imgOps.Items.Add(adjust);
+        var border = new MenuItem { Header = "添加边框…" };
+        border.Click += (_, _) => ImageOpDialogs.ShowBorder(this);
+        imgOps.Items.Add(border);
+        var watermark = new MenuItem { Header = "文字水印…" };
+        watermark.Click += (_, _) => ImageOpDialogs.ShowWatermark(this);
+        imgOps.Items.Add(watermark);
+        imgOps.Items.Add(new Separator());
         AddImageOp(imgOps, "旋转 90°", b => ImageProcessor.Rotate(b, 90));
         AddImageOp(imgOps, "旋转 180°", b => ImageProcessor.Rotate(b, 180));
         AddImageOp(imgOps, "旋转 270°", b => ImageProcessor.Rotate(b, 270));
         imgOps.Items.Add(new Separator());
         AddImageOp(imgOps, "水平翻转", ImageProcessor.FlipHorizontal);
         AddImageOp(imgOps, "垂直翻转", ImageProcessor.FlipVertical);
+        imgOps.Items.Add(new Separator());
+        var cropItem = new MenuItem { Header = "裁剪…", IsEnabled = !Sticker.IsLocked };
+        cropItem.Click += (_, _) => EnterCropMode();
+        imgOps.Items.Add(cropItem);
         menu.Items.Add(imgOps);
 
         var undoOp = new MenuItem { Header = "撤销标注 / 处理", IsEnabled = Sticker.UndoImage is not null };
@@ -652,6 +699,12 @@ public sealed partial class StickerWindow : Window
     private void OnDismissSelection() => ClearTextSelection();
 
     /// <summary>给图像处理子菜单添加一项。</summary>
+    /// <summary>图像处理参数弹窗的实时预览应用。</summary>
+    public void ApplyPreviewOp(Func<BitmapSource, BitmapSource> op) => _owner.ApplyImageOp(this, op);
+
+    /// <summary>参数弹窗"重置"：恢复打开时原图。</summary>
+    public void RestorePreviewImage(BitmapSource orig) => _owner.RestorePreviewImage(this, orig);
+
     private void AddImageOp(MenuItem root, string header, Func<BitmapSource, BitmapSource> op)
     {
         var item = new MenuItem { Header = header };
@@ -1158,8 +1211,229 @@ public sealed partial class StickerWindow : Window
         RefreshFrame();
     }
 
+    /// <summary>进入裁剪模式：显示遮罩 + 裁剪框（默认全图），禁标注/拖动。</summary>
+    public void EnterCropMode()
+    {
+        if (_cropMode || Sticker.IsLocked) return;
+        if (_annotating) ExitAnnotationMode(commit: true);
+        ClearTextSelection();
+        _cropMode = true;
+        _cropDrag = CropDrag.None;
+        _cropRect = new Rect(0, 0, ActualWidth, ActualHeight);
+        OverlayLayer.Children.Clear();
+        OverlayLayer.Visibility = Visibility.Visible;
+        RefreshCropLayer();
+    }
+
+    /// <summary>ESC：取消裁剪，恢复叠加层。返回是否已拦截（供全局 ESC 钩子）。</summary>
+    public bool TryExitCropMode()
+    {
+        if (!_cropMode) return false;
+        _cropMode = false;
+        _cropDrag = CropDrag.None;
+        if (IsMouseCaptured) ReleaseMouseCapture();
+        OverlayLayer.Children.Clear();
+        OverlayLayer.Visibility = Sticker.OcrWords is { Count: > 0 } ? Visibility.Visible : Visibility.Collapsed;
+        RefreshFrame();
+        return true;
+    }
+
+    /// <summary>Enter / 双击：确认裁剪并应用。</summary>
+    public bool ConfirmCrop()
+    {
+        if (!_cropMode) return false;
+        var s = ToImageCoord(new Point(_cropRect.X, _cropRect.Y));
+        var e = ToImageCoord(new Point(_cropRect.X + _cropRect.Width, _cropRect.Y + _cropRect.Height));
+        var region = new Rect(s.X, s.Y, e.X - s.X, e.Y - s.Y);
+        _cropMode = false;
+        _cropDrag = CropDrag.None;
+        if (IsMouseCaptured) ReleaseMouseCapture();
+        OverlayLayer.Children.Clear();
+        OverlayLayer.Visibility = Sticker.OcrWords is { Count: > 0 } ? Visibility.Visible : Visibility.Collapsed;
+        RefreshFrame();
+        if (region.Width >= 4 && region.Height >= 4)
+            _owner.ApplyImageOp(this, b => ImageProcessor.Crop(b, region));
+        return true;
+    }
+
+    private void HandleCropDown(Point p)
+    {
+        _cropStart = p;
+        _cropOrig = _cropRect;
+        var r = _cropRect;
+        const double tol = 8;
+        // 角
+        for (int i = 0; i < 4; i++)
+        {
+            var cpt = new Point(i is 0 or 2 ? r.X : r.X + r.Width, i < 2 ? r.Y : r.Y + r.Height);
+            if (Dist(p, cpt) <= tol) { _cropDrag = CropDrag.Corner; _cropDragIndex = i; CaptureMouse(); return; }
+        }
+        // 边
+        Point[] edges = { new(r.X + r.Width / 2, r.Y), new(r.X + r.Width, r.Y + r.Height / 2), new(r.X + r.Width / 2, r.Y + r.Height), new(r.X, r.Y + r.Height / 2) };
+        for (int i = 0; i < 4; i++)
+            if (Dist(p, edges[i]) <= tol) { _cropDrag = CropDrag.Edge; _cropDragIndex = i; CaptureMouse(); return; }
+        // 框内移动
+        if (r.Contains(p)) { _cropDrag = CropDrag.Move; CaptureMouse(); return; }
+        _cropDrag = CropDrag.None;
+    }
+
+    private void HandleCropMove(Point p)
+    {
+        if (_cropDrag == CropDrag.None) { UpdateCropHover(p); return; }
+        var r = _cropOrig;
+        double x = r.X, y = r.Y, w = r.Width, h = r.Height;
+        double right = x + w, bottom = y + h;
+        switch (_cropDrag)
+        {
+            case CropDrag.Corner:
+                switch (_cropDragIndex)
+                {
+                    case 0: x = Math.Min(p.X, right - 8); y = Math.Min(p.Y, bottom - 8); w = right - x; h = bottom - y; break;
+                    case 1: y = Math.Min(p.Y, bottom - 8); w = Math.Max(p.X - x, 8); h = bottom - y; break;
+                    case 2: x = Math.Min(p.X, right - 8); w = right - x; h = Math.Max(p.Y - y, 8); break;
+                    default: w = Math.Max(p.X - x, 8); h = Math.Max(p.Y - y, 8); break;
+                }
+                break;
+            case CropDrag.Edge:
+                switch (_cropDragIndex)
+                {
+                    case 0: y = Math.Min(p.Y, bottom - 8); h = bottom - y; break;
+                    case 1: w = Math.Max(p.X - x, 8); break;
+                    case 2: h = Math.Max(p.Y - y, 8); break;
+                    default: x = Math.Min(p.X, right - 8); w = right - x; break;
+                }
+                break;
+            case CropDrag.Move:
+                x = Math.Clamp(p.X - (_cropStart.X - r.X), 0, ActualWidth - w);
+                y = Math.Clamp(p.Y - (_cropStart.Y - r.Y), 0, ActualHeight - h);
+                break;
+        }
+        _cropRect = new Rect(x, y, w, h);
+        RefreshCropLayer();
+    }
+
+    private void HandleCropUp(Point p)
+    {
+        bool wasDrag = _cropDrag != CropDrag.None;
+        _cropDrag = CropDrag.None;
+        if (IsMouseCaptured) ReleaseMouseCapture();
+        if (wasDrag) { RefreshCropLayer(); return; }
+        // 未拖动（单击）→ 双击判定
+        var now = DateTime.Now;
+        bool isDouble = (now - _lastCropUpTime).TotalMilliseconds < 500
+                        && Math.Abs(p.X - _lastCropUpPos.X) < 6
+                        && Math.Abs(p.Y - _lastCropUpPos.Y) < 6;
+        _lastCropUpTime = now;
+        _lastCropUpPos = p;
+        if (isDouble) ConfirmCrop();
+    }
+
+    private DateTime _lastCropUpTime = DateTime.MinValue;
+    private Point _lastCropUpPos;
+
+    private void UpdateCropHover(Point p)
+    {
+        var r = _cropRect;
+        const double tol = 8;
+        for (int i = 0; i < 4; i++)
+        {
+            var cpt = new Point(i is 0 or 2 ? r.X : r.X + r.Width, i < 2 ? r.Y : r.Y + r.Height);
+            if (Dist(p, cpt) <= tol) { Cursor = System.Windows.Input.Cursors.SizeNWSE; return; }
+        }
+        Point[] edges = { new(r.X + r.Width / 2, r.Y), new(r.X + r.Width, r.Y + r.Height / 2), new(r.X + r.Width / 2, r.Y + r.Height), new(r.X, r.Y + r.Height / 2) };
+        for (int i = 0; i < 4; i++)
+        {
+            if (Dist(p, edges[i]) <= tol)
+            {
+                Cursor = (i == 0 || i == 2) ? System.Windows.Input.Cursors.SizeNS : System.Windows.Input.Cursors.SizeWE;
+                return;
+            }
+        }
+        Cursor = r.Contains(p) ? System.Windows.Input.Cursors.SizeAll : System.Windows.Input.Cursors.Cross;
+    }
+
+    private static double Dist(Point a, Point b)
+    {
+        double dx = a.X - b.X, dy = a.Y - b.Y;
+        return Math.Sqrt(dx * dx + dy * dy);
+    }
+
+    /// <summary>裁剪遮罩 + 裁剪框 + 手柄 + 尺寸 HUD。</summary>
+    private void RefreshCropLayer()
+    {
+        OverlayLayer.Children.Clear();
+        double w = ActualWidth, h = ActualHeight;
+        var r = _cropRect;
+        var mask = new SolidColorBrush(Color.FromArgb(0x80, 0x00, 0x00, 0x00));
+        // 上 / 下 / 左 / 右 四块遮罩
+        AddMask(mask, 0, 0, w, Math.Max(0, r.Y));
+        AddMask(mask, 0, r.Y + r.Height, w, Math.Max(0, h - r.Y - r.Height));
+        AddMask(mask, 0, r.Y, Math.Max(0, r.X), r.Height);
+        AddMask(mask, r.X + r.Width, r.Y, Math.Max(0, w - r.X - r.Width), r.Height);
+
+        // 裁剪框
+        var frame = new System.Windows.Shapes.Rectangle
+        {
+            Width = Math.Max(1, r.Width), Height = Math.Max(1, r.Height),
+            Stroke = new SolidColorBrush(Color.FromRgb(0x3B, 0x82, 0xF6)),
+            StrokeThickness = 2,
+            Fill = Brushes.Transparent,
+        };
+        Canvas.SetLeft(frame, r.X);
+        Canvas.SetTop(frame, r.Y);
+        OverlayLayer.Children.Add(frame);
+
+        // 手柄（角 + 边）
+        var hb = new SolidColorBrush(Color.FromRgb(0x00, 0xE5, 0xC0));
+        (double, double)[] pts =
+        {
+            (r.X, r.Y), (r.X + r.Width, r.Y), (r.X, r.Y + r.Height), (r.X + r.Width, r.Y + r.Height),
+            (r.X + r.Width / 2, r.Y), (r.X + r.Width, r.Y + r.Height / 2), (r.X + r.Width / 2, r.Y + r.Height), (r.X, r.Y + r.Height / 2),
+        };
+        foreach (var (px, py) in pts)
+        {
+            var sq = new System.Windows.Shapes.Rectangle
+            {
+                Width = 8, Height = 8,
+                Fill = Brushes.White,
+                Stroke = hb,
+                StrokeThickness = 1.5,
+            };
+            Canvas.SetLeft(sq, px - 4);
+            Canvas.SetTop(sq, py - 4);
+            OverlayLayer.Children.Add(sq);
+        }
+
+        // 尺寸 HUD（物理像素）
+        var s = ToImageCoord(new Point(r.X, r.Y));
+        var e = ToImageCoord(new Point(r.X + r.Width, r.Y + r.Height));
+        var hud = new System.Windows.Controls.TextBlock
+        {
+            Text = $"{Math.Max(0, (int)(e.X - s.X))} × {Math.Max(0, (int)(e.Y - s.Y))}   Enter 确认 · Esc 取消 · 双击确认",
+            FontSize = 12,
+            Foreground = Brushes.White,
+            Background = new SolidColorBrush(Color.FromArgb(0xCC, 0x00, 0x00, 0x00)),
+            Padding = new Thickness(6, 2, 6, 2),
+        };
+        Canvas.SetLeft(hud, Math.Clamp(r.X, 0, Math.Max(0, w - 300)));
+        Canvas.SetTop(hud, Math.Clamp(r.Y - 24, 0, Math.Max(0, h - 22)));
+        OverlayLayer.Children.Add(hud);
+    }
+
+    private void AddMask(SolidColorBrush brush, double x, double y, double w, double h)
+    {
+        if (w <= 0 || h <= 0) return;
+        var rect = new System.Windows.Shapes.Rectangle { Width = w, Height = h, Fill = brush };
+        Canvas.SetLeft(rect, x);
+        Canvas.SetTop(rect, y);
+        OverlayLayer.Children.Add(rect);
+    }
+
     /// <summary>是否处于标注模式（管理器钩子 / 菜单判断用）。</summary>
     public bool IsAnnotating => _annotating;
+
+    /// <summary>是否处于裁剪模式（管理器钩子用）。</summary>
+    public bool IsCropping => _cropMode;
 
     protected override void OnClosed(EventArgs e)
     {

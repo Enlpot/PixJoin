@@ -250,6 +250,17 @@ public sealed class StickerManager
         RefreshGroupVisuals();   // 组合成员尺寸变化后刷新组合轮廓
     }
 
+    /// <summary>参数弹窗"重置"：恢复打开时原图（撤销快照保持，仍可继续撤销）。</summary>
+    public void RestorePreviewImage(StickerWindow window, BitmapSource orig)
+    {
+        var s = window.Sticker;
+        if (orig is null || ReferenceEquals(s.Image, orig)) return;
+        s.Image = orig;
+        s.OcrWords = null;
+        window.RefreshImage();
+        RefreshGroupVisuals();
+    }
+
     /// <summary>撤销上一步标注 / 图像处理（恢复首版快照）。返回是否已恢复。</summary>
     public bool UndoImageOp(StickerWindow window)
     {
@@ -380,6 +391,9 @@ public sealed class StickerManager
         {
             if (w.Handle == IntPtr.Zero || !Win32.GetWindowRect(w.Handle, out var r)) continue;
             if (p.X < r.Left || p.X >= r.Right || p.Y < r.Top || p.Y >= r.Bottom) continue;
+
+            // 裁剪模式：ESC 取消裁剪，不关闭贴图
+            if (w.TryExitCropMode()) return true;
 
             // 标注模式：ESC 固化并退出标注，不关闭贴图
             if (w.TryExitAnnotationMode()) return true;

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Runtime.InteropServices;
 
 namespace PixJoin.App.Native;
@@ -102,6 +102,30 @@ internal static class Win32
     [DllImport("user32.dll")]
     public static extern bool GetPhysicalCursorPos(out POINT lpPoint);
 
+    // ---- 窗口枚举（智能捕获） ----
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
+
+    [DllImport("user32.dll")]
+    public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    // ---- 长截图：向目标窗口发送滚动消息 ----
+    public const uint WM_MOUSEWHEEL = 0x020A;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
     // ---- 剪贴板（原生写入，规避 WPF Clipboard 在占用时的 CLIPBRD_E_CANT_OPEN） ----
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool OpenClipboard(IntPtr hWndNewOwner);
@@ -188,8 +212,6 @@ internal static class Win32
                                      IntPtr hdcSrc, int xSrc, int ySrc, uint rop);
 
     // ---------- 工具 ----------
-    [DllImport("user32.dll")]
-    public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
     public static bool IsKeyDown(int vk) => (GetAsyncKeyState(vk) & 0x8000) != 0;
 
