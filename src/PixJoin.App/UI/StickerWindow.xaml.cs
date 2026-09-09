@@ -9,6 +9,8 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
+using System.Linq;
+using System.Windows.Media.Effects;
 using PixJoin.App.Native;
 using PixJoin.Core.Models;
 using PixJoin.Core.Services;
@@ -114,6 +116,17 @@ public sealed partial class StickerWindow : Window
         PreviewMouseRightButtonUp += OnRightButtonUp;
         PreviewMouseRightButtonDown += OnRightButtonDown;
         MouseWheel += OnMouseWheel;
+
+        // 中键 = 重置为原始大小（PixPin 同款）；裁剪 / 标注 / 锁定中禁用
+        PreviewMouseDown += (_, e) =>
+        {
+            if (e.ChangedButton != MouseButton.Middle) return;
+            if (_cropMode || _annotating || Sticker.IsLocked) { e.Handled = true; return; }
+            ResetToOriginalSize();
+            e.Handled = true;
+        };
+
+        ApplyShadow(Sticker.HasShadow);
 
         // 拖入图片文件 → 直接贴图（PixPin 同款交互）
         AllowDrop = true;
@@ -593,6 +606,15 @@ public sealed partial class StickerWindow : Window
         Img.Source = crop;
     }
 
+    private void OnCreateGroup()
+    {
+        var dlg = new InputDialog("新建贴图分组", "分组名称：", "");
+        if (dlg.ShowDialog() != true) return;
+        var name = dlg.Value.Trim();
+        if (string.IsNullOrEmpty(name)) return;
+        _owner.GroupSticker(this, name);
+    }
+
     private void OnMouseWheel(object sender, MouseWheelEventArgs e)
     {
         // 裁剪模式：滚轮不缩放
@@ -821,6 +843,28 @@ public sealed partial class StickerWindow : Window
         topmost.Click += (_, _) => { SetTopmost(!_topmost); };
         menu.Items.Add(topmost);
 
+        var shadow = new MenuItem { Header = "阴影 (Y)", IsChecked = Sticker.HasShadow };
+        shadow.Click += (_, _) => ApplyShadow(!Sticker.HasShadow);
+        menu.Items.Add(shadow);
+
+        // 贴图分组
+        var groupRoot = new MenuItem { Header = "贴图分组" };
+        var inGroup = !string.IsNullOrEmpty(Sticker.GroupName);
+        var ungroup = new MenuItem { Header = "取消分组", IsEnabled = inGroup };
+        ungroup.Click += (_, _) => _owner.UngroupSticker(this);
+        groupRoot.Items.Add(ungroup);
+        foreach (var g in _owner.GetGroupNames().Where(n => n != Sticker.GroupName))
+        {
+            var gname = g;
+            var gi = new MenuItem { Header = $"加入分组「{gname}」" };
+            gi.Click += (_, _) => _owner.GroupSticker(this, gname);
+            groupRoot.Items.Add(gi);
+        }
+        var newGroup = new MenuItem { Header = "新建分组…" };
+        newGroup.Click += (_, _) => OnCreateGroup();
+        groupRoot.Items.Add(newGroup);
+        menu.Items.Add(groupRoot);
+
         menu.Items.Add(new Separator());
 
         var close = new MenuItem { Header = "关闭" };
@@ -998,6 +1042,38 @@ public sealed partial class StickerWindow : Window
         root.Items.Add(item);
     }
     /// <summary>鼠标穿透（托盘全局开关）：点击事件穿过贴图到下层窗口。</summary>
+    /// <summary>恢复尺寸到图片原始物理像素（中键）。</summary>
+    public void ResetToOriginalSize()
+    {
+        int pw = Sticker.Image.PixelWidth;
+        int ph = Sticker.Image.PixelHeight;
+        if (pw < 1 || ph < 1) return;
+        if (Math.Abs(Sticker.W - pw) < 0.01 && Math.Abs(Sticker.H - ph) < 0.01) return;
+        ClearTextSelection();
+        Sticker.W = pw;
+        Sticker.H = ph;
+        ApplyGeometry();
+        _owner.OnStickerResized(this);
+    }
+
+    /// <summary>贴图阴影开关：DropShadowEffect 挂在外框上（透明窗口需 AllowsTransparency）。</summary>
+    public void ApplyShadow(bool on)
+    {
+        Sticker.HasShadow = on;
+        Frame.Effect = on
+            ? new DropShadowEffect { BlurRadius = 18, ShadowDepth = 4, Direction = 270, Opacity = 0.5, Color = Colors.Black }
+            : null;
+    }
+
+    /// <summary>恢复尺寸（供管理器恢复关闭快照）。</summary>
+    public void SetSize(double w, double h)
+    {
+        Sticker.W = Math.Max(16, w);
+        Sticker.H = Math.Max(16, h);
+        ApplyGeometry();
+        _owner.OnStickerResized(this);
+    }
+
     public void SetClickThrough(bool on)
     {
         if (Handle == IntPtr.Zero) return;

@@ -1,4 +1,4 @@
-using System.Windows.Media.Imaging;
+﻿using System.Windows.Media.Imaging;
 
 namespace PixJoin.Core.Models;
 
@@ -34,6 +34,12 @@ public sealed class Sticker
 
     /// <summary>锁定：不可移动 / 缩放 / 文字选择 / 双击关闭（右键菜单仍可用）。</summary>
     public bool IsLocked { get; set; }
+
+    /// <summary>贴图阴影（菜单切换，默认随设置）。</summary>
+    public bool HasShadow { get; set; } = true;
+
+    /// <summary>贴图分组名（null = 未分组）。</summary>
+    public string? GroupName { get; set; }
 
     /// <summary>标注 / 图像处理前的图像快照（用于「撤销上一步」）；null = 无可撤销。</summary>
     public BitmapSource? UndoImage { get; set; }

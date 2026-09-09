@@ -30,6 +30,8 @@ public sealed class StickerManager
     private bool _shuttingDown;
     private StickerWindow? _hiddenExcept;
     private bool _clickThrough;
+    private (BitmapSource img, double x, double y, double w, double h)? _lastClosed;  // 最近关闭的一张（恢复用）
+    private readonly Dictionary<string, bool> _groupVisible = new(StringComparer.Ordinal);  // 分组名 -> 是否显示
 
     public StickerManager(SettingsService settings, IOcrEngine? ocr = null)
     {
@@ -94,6 +96,7 @@ public sealed class StickerManager
             W = w,
             H = h,
             Opacity = _settings.Current.DefaultOpacity,
+            HasShadow = _settings.Current.StickerShadowEnabled,
         };
 
         _groups.Register(sticker);
@@ -344,13 +347,66 @@ public sealed class StickerManager
         RefreshGroupVisuals();
     }
 
-    public void CloseSticker(StickerWindow window) => window.Close();
+    public void CloseSticker(StickerWindow window)
+    {
+        // 记录快照供「恢复上次关闭的贴图」（单张关闭；CloseAll 不记录）
+        var s = window.Sticker;
+        var img = s.Image.Clone();
+        img.Freeze();
+        _lastClosed = (img, s.X, s.Y, s.W, s.H);
+        window.Close();
+    }
+
+    /// <summary>恢复上次关闭的单张贴图（原图 + 原位置/尺寸）。返回是否恢复成功。</summary>
+    public bool RestoreLastClosed()
+    {
+        if (_lastClosed is not { } snap) return false;
+        var win = CreateSticker(snap.img, new Point(snap.x, snap.y));
+        if (win is null) return false;
+        win.SetSize(snap.w, snap.h);
+        return true;
+    }
 
     public void CloseAll()
     {
         foreach (var w in _windows.Values.ToList()) w.Close();
         _groups.Clear();
         _guideLayer?.ClearAll();
+    }
+
+    // ---------------- 贴图分组 ----------------
+
+    public IReadOnlyList<string> GetGroupNames() => _windows.Values
+        .Select(w => w.Sticker.GroupName)
+        .Where(n => !string.IsNullOrEmpty(n))
+        .Cast<string>()
+        .Distinct()
+        .OrderBy(n => n, StringComparer.Ordinal)
+        .ToList();
+
+    public void GroupSticker(StickerWindow window, string name)
+    {
+        window.Sticker.GroupName = name;
+        window.RefreshFrame();
+    }
+
+    public void UngroupSticker(StickerWindow window)
+    {
+        window.Sticker.GroupName = null;
+        window.RefreshFrame();
+    }
+
+    /// <summary>切换整组显示/隐藏（Visibility.Hidden 保留位置）。返回切换后的状态（true=显示）。</summary>
+    public bool ToggleGroupVisibility(string name)
+    {
+        bool show = !(_groupVisible.TryGetValue(name, out var v) && !v);
+        _groupVisible[name] = show;
+        foreach (var w in _windows.Values)
+        {
+            if (w.Sticker.GroupName == name)
+                w.Visibility = show ? Visibility.Visible : Visibility.Hidden;
+        }
+        return show;
     }
 
     // ---------------- 首次使用确认（双击关闭 / 滚轮缩放 / ESC 关闭） ----------------

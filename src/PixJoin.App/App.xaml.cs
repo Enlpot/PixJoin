@@ -469,6 +469,34 @@ public partial class App : Application
 
         menu.Items.Add(new ToolStripSeparator());
 
+        var restoreLast = new ToolStripMenuItem("恢复上次关闭的贴图");
+        restoreLast.Click += (_, _) =>
+        {
+            if (!_stickers.RestoreLastClosed())
+                System.Windows.MessageBox.Show("没有可恢复的贴图（需要先关闭过一张贴图）。", "PixJoin",
+                    System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+        };
+        menu.Items.Add(restoreLast);
+
+        // 贴图分组子菜单：打开时动态列出当前分组
+        var groupMenu = new ToolStripMenuItem("贴图分组");
+        groupMenu.DropDownOpening += (_, _) =>
+        {
+            groupMenu.DropDownItems.Clear();
+            var names = _stickers.GetGroupNames();
+            if (names.Count == 0)
+            {
+                groupMenu.DropDownItems.Add(new ToolStripMenuItem("（暂无分组）") { Enabled = false });
+            }
+            foreach (var n in names)
+            {
+                var item = new ToolStripMenuItem(n);
+                item.Click += (_, _) => _stickers.ToggleGroupVisibility(n);
+                groupMenu.DropDownItems.Add(item);
+            }
+        };
+        menu.Items.Add(groupMenu);
+
         var closeAll = new ToolStripMenuItem("关闭全部贴图");
         closeAll.Click += (_, _) => _stickers.CloseAll();
         menu.Items.Add(closeAll);

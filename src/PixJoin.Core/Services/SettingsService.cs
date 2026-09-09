@@ -39,6 +39,9 @@ public sealed class AppSettings
 
     public double DefaultOpacity { get; set; } = 1.0;
 
+    /// <summary>新贴图默认是否带阴影。</summary>
+    public bool StickerShadowEnabled { get; set; } = true;
+
     public bool ShowGroupOutline { get; set; } = true;
 
     // ---- 贴图交互快捷键（首次使用确认） ----
