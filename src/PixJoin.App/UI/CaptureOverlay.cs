@@ -13,7 +13,7 @@ using PixJoin.Core.Services;
 
 namespace PixJoin.App.UI;
 
-public enum CaptureAction { Pin, Copy, Save, Annotate, ScrollCapture }
+public enum CaptureAction { Pin, Copy, Save, Annotate, ScrollCapture, Translate }
 
 public sealed record CaptureResult(BitmapSource Bitmap, Rect PhysicalRect, CaptureAction Action);
 
@@ -1131,6 +1131,7 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         _toolbar.Children.Add(tools);
 
         _toolbar.Children.Add(MakeSeparator(scale));
+        _toolbar.Children.Add(MakeActionButton("翻译", CaptureAction.Translate, scale));
         _toolbar.Children.Add(MakeActionButton("长截图", CaptureAction.ScrollCapture, scale));
         _toolbar.Children.Add(MakeActionButton("贴图", CaptureAction.Pin, scale, primary: true));
         _toolbar.Children.Add(MakeActionButton("复制", CaptureAction.Copy, scale));
