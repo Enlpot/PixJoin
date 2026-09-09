@@ -468,6 +468,21 @@ public partial class App : Application
         };
         menu.Items.Add(pickColor);
 
+        var recordGif = new ToolStripMenuItem("录制 GIF…");
+        recordGif.Click += (_, _) =>
+        {
+            try
+            {
+                new UI.ScreenRecorderWindow().Show();
+            }
+            catch (Exception ex)
+            {
+                System.Windows.MessageBox.Show($"录制窗口打开失败：{ex.Message}", "PixJoin",
+                    System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+            }
+        };
+        menu.Items.Add(recordGif);
+
         menu.Items.Add(new ToolStripSeparator());
 
         var restoreLast = new ToolStripMenuItem("恢复上次关闭的贴图");
