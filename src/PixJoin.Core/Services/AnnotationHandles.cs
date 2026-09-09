@@ -93,6 +93,7 @@ public static class AnnotationHandles
                 break;
             }
             case AnnotationTool.Ellipse:
+            case AnnotationTool.Spotlight:
             {
                 double x = a.X, y = a.Y, w = a.W, h = a.H;
                 list.Add(new AnnotHandle(HandleKind.Corner, new Point(x, y), 0));

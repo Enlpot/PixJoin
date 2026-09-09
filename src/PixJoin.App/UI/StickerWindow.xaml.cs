@@ -1349,6 +1349,8 @@ public sealed partial class StickerWindow : Window
             case AnnotationTool.Rect:
             case AnnotationTool.Highlight:
             case AnnotationTool.Mosaic:
+            case AnnotationTool.Ellipse:
+            case AnnotationTool.Spotlight:
                 _annotations.Add(new Annotation
                 {
                     Tool = _annotTool!.Value,
@@ -1408,6 +1410,7 @@ public sealed partial class StickerWindow : Window
                 case AnnotationTool.Mosaic:
                 case AnnotationTool.Ellipse:
                 case AnnotationTool.Highlight:
+                case AnnotationTool.Spotlight:
                     tmp = new Annotation
                     {
                         Tool = tool, Color = _annotColor, Thickness = _annotThickness,
@@ -1596,7 +1599,8 @@ public sealed partial class StickerWindow : Window
         double sx = Img.ActualWidth / Sticker.Image.PixelWidth;
         double sy = Img.ActualHeight / Sticker.Image.PixelHeight;
         // 与截图侧同一渲染器，保证两种入口标注外观完全一致
-        AnnotationPainter.Draw(AnnotationLayer, a, sx, sy);
+        AnnotationPainter.Draw(AnnotationLayer, a, sx, sy,
+            new Size(AnnotationLayer.ActualWidth, AnnotationLayer.ActualHeight));
     }
 
     /// <summary>图片被标注 / 图像处理替换后刷新显示（更新源、窗口尺寸、叠加层状态）。</summary>

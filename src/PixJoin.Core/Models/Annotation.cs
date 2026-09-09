@@ -1,4 +1,4 @@
-using System.Windows.Media;
+﻿using System.Windows.Media;
 
 namespace PixJoin.Core.Models;
 
@@ -13,6 +13,7 @@ public enum AnnotationTool
     Highlight,   // 高亮（半透明填充）
     Mosaic,      // 马赛克（区域像素化）
     Number,      // 序号（递增圆圈数字）
+    Spotlight,   // 聚光灯（弱化周围区域，突出中间，可圆/方）
 }
 
 /// <summary>
@@ -50,6 +51,9 @@ public sealed class Annotation
 
     /// <summary>是否虚线（矩形 / 椭圆 / 箭头 / 画笔）。默认实线。</summary>
     public bool Dashed { get; init; }
+
+    /// <summary>聚光灯形状：true=圆形，false=矩形。</summary>
+    public bool SpotlightRound { get; init; }
 
     /// <summary>箭头形状（仅箭头工具有效）。默认实心三角。</summary>
     public ArrowStyle Arrow { get; init; } = ArrowStyle.Solid;

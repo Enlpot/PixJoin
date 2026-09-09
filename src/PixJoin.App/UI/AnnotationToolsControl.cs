@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
@@ -31,6 +31,7 @@ public class AnnotationToolsControl : StackPanel
         (AnnotationTool.Highlight, "🖍", "高亮"),
         (AnnotationTool.Mosaic, "▦", "马赛克"),
         (AnnotationTool.Number, "①", "序号"),
+        (AnnotationTool.Spotlight, "◎", "聚光灯"),
     };
 
     private static readonly double[] ThickSteps = { 2, 3, 4, 6, 8, 12 };

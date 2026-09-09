@@ -17,7 +17,8 @@ namespace PixJoin.Core.Services;
 public static class AnnotationPainter
 {
     /// <summary>把一个标注画到画布上（与截图 / 贴图 / 最终渲染一致的矢量外观）。</summary>
-    public static void Draw(Canvas canvas, Annotation a, double sx, double sy)
+    /// <param name="canvasSize">画布尺寸（DIP）。聚光灯需据此弱化画布内除中心区外的全部区域；其它工具可忽略。</param>
+    public static void Draw(Canvas canvas, Annotation a, double sx, double sy, Size? canvasSize = null)
     {
         if (canvas is null || a is null) return;
         var brush = new SolidColorBrush(a.Color);
@@ -104,6 +105,47 @@ public static class AnnotationPainter
                 };
                 Canvas.SetLeft(tb, a.X * sx); Canvas.SetTop(tb, a.Y * sy);
                 canvas.Children.Add(tb);
+                break;
+            }
+
+            case AnnotationTool.Spotlight:
+            {
+                if (canvasSize is { } cs)
+                {
+                    double th = a.Thickness / 2;
+                    var outer = new RectangleGeometry(new Rect(0, 0, cs.Width, cs.Height));
+                    Geometry hole = a.SpotlightRound
+                        ? new EllipseGeometry(new Point((a.X + a.W / 2) * sx, (a.Y + a.H / 2) * sy),
+                            Math.Max(1, a.W / 2 * sx), Math.Max(1, a.H / 2 * sy))
+                        : new RectangleGeometry(new Rect((a.X - th) * sx, (a.Y - th) * sy,
+                            Math.Max(1, (a.W + th * 2) * sx), Math.Max(1, (a.H + th * 2) * sy)));
+                    var geo = new CombinedGeometry(GeometryCombineMode.Exclude, outer, hole);
+                    var dim = new SolidColorBrush(Color.FromArgb(0xB3, 0, 0, 0));
+                    dim.Freeze();
+                    canvas.Children.Add(new Path { Data = geo, Fill = dim });
+
+                    // 中心区域描边（与其它闭合形状一致的画笔）
+                    if (a.SpotlightRound)
+                    {
+                        var el = new Ellipse
+                        {
+                            Width = Math.Max(1, (a.W + th * 2) * sx), Height = Math.Max(1, (a.H + th * 2) * sy),
+                            Stroke = brush, StrokeThickness = stroke,
+                        };
+                        Canvas.SetLeft(el, (a.X - th) * sx); Canvas.SetTop(el, (a.Y - th) * sy);
+                        canvas.Children.Add(el);
+                    }
+                    else
+                    {
+                        var r = new Rectangle
+                        {
+                            Width = Math.Max(1, (a.W + th * 2) * sx), Height = Math.Max(1, (a.H + th * 2) * sy),
+                            Stroke = brush, StrokeThickness = stroke,
+                        };
+                        Canvas.SetLeft(r, (a.X - th) * sx); Canvas.SetTop(r, (a.Y - th) * sy);
+                        canvas.Children.Add(r);
+                    }
+                }
                 break;
             }
 

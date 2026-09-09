@@ -82,6 +82,26 @@ public static class AnnotationRenderer
                             dc.DrawText(MakeText(a.Text, a.Color, Math.Max(12, a.Thickness * 4)), new Point(a.X, a.Y));
                         break;
 
+                    case AnnotationTool.Spotlight:
+                    {
+                        var outer = new RectangleGeometry(new Rect(0, 0, w, h));
+                        Geometry hole = a.SpotlightRound
+                            ? new EllipseGeometry(new Point(a.X + a.W / 2, a.Y + a.H / 2), Math.Max(1, a.W / 2), Math.Max(1, a.H / 2))
+                            : new RectangleGeometry(new Rect(a.X, a.Y, Math.Max(1, a.W), Math.Max(1, a.H)));
+                        var dimGeo = new CombinedGeometry(GeometryCombineMode.Exclude, outer, hole);
+                        var dimBrush = new SolidColorBrush(Color.FromArgb(0xB3, 0, 0, 0));
+                        dimBrush.Freeze();
+                        dc.DrawGeometry(dimBrush, null, dimGeo);
+                        var spotBrush = new SolidColorBrush(a.Color);
+                        spotBrush.Freeze();
+                        var spotPen = new Pen(spotBrush, a.Thickness);
+                        if (a.SpotlightRound)
+                            dc.DrawEllipse(null, spotPen, new Point(a.X + a.W / 2, a.Y + a.H / 2), a.W / 2, a.H / 2);
+                        else
+                            dc.DrawRectangle(null, spotPen, new Rect(a.X, a.Y, a.W, a.H));
+                        break;
+                    }
+
                     case AnnotationTool.Number:
                         double r = Math.Max(10, a.Thickness * 2.5);
                         var fill = new SolidColorBrush(a.Color);
