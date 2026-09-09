@@ -478,6 +478,8 @@ public partial class App : Application
         fromFile.Click += (_, _) => PinFromFile();
         menu.Items.Add(fromFile);
 
+        menu.Items.Add(new ToolStripSeparator());
+
         var pickColor = new ToolStripMenuItem("取色…");
         pickColor.Click += (_, _) =>
         {
@@ -541,6 +543,10 @@ public partial class App : Application
         var closeAll = new ToolStripMenuItem("关闭全部贴图");
         closeAll.Click += (_, _) => _stickers.CloseAll();
         menu.Items.Add(closeAll);
+
+        var hideOthers = new ToolStripMenuItem("隐藏其他贴图");
+        hideOthers.Click += (_, _) => _stickers.ToggleHideOthers(null);
+        menu.Items.Add(hideOthers);
 
         var front = new ToolStripMenuItem("贴图置前");
         front.Click += (_, _) => _stickers.BringAllToFront();
