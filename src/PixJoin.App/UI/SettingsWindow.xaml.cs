@@ -39,6 +39,9 @@ public partial class SettingsWindow : Window
         _settings = settings;
         _onApplied = onApplied;
 
+        // 左侧导航：默认选中第一页
+        NavList.SelectedIndex = 0;
+
         var s = settings.Current;
         _newModifiers = s.HotkeyModifiers;
         _newVk = s.HotkeyVirtualKey;
@@ -165,6 +168,15 @@ public partial class SettingsWindow : Window
     {
         // 语言切换即时生效（贴图 OCR 走新语言）；保存时写入配置
         _onApplied?.Invoke();
+    }
+
+    private void OnNavChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        int idx = NavList.SelectedIndex;
+        PageGeneral.Visibility = idx == 0 ? Visibility.Visible : Visibility.Collapsed;
+        PageCapture.Visibility = idx == 1 ? Visibility.Visible : Visibility.Collapsed;
+        PageSticker.Visibility = idx == 2 ? Visibility.Visible : Visibility.Collapsed;
+        PageExport.Visibility = idx == 3 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void OnSave(object sender, RoutedEventArgs e)
