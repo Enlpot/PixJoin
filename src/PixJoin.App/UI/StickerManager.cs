@@ -107,6 +107,33 @@ public sealed class StickerManager
         return window;
     }
 
+    /// <summary>批量贴入图片文件（拖拽/复制文件）：在鼠标物理坐标处依次创建，多张轻微错开。</summary>
+    public int PinFiles(IReadOnlyList<string> paths, Point cursorPhysical)
+    {
+        int created = 0;
+        for (int i = 0; i < paths.Count; i++)
+        {
+            string ext = Path.GetExtension(paths[i]).ToLowerInvariant();
+            if (ext is not (".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".tif" or ".tiff" or ".webp")) continue;
+            try
+            {
+                var bmp = new BitmapImage();
+                bmp.BeginInit();
+                bmp.UriSource = new Uri(paths[i]);
+                bmp.CacheOption = BitmapCacheOption.OnLoad;
+                bmp.EndInit();
+                bmp.Freeze();
+                var pos = new Point(cursorPhysical.X + 24.0 * i, cursorPhysical.Y + 24.0 * i);
+                if (CreateSticker(bmp, pos) is not null) created++;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[PixJoin] PinFiles 失败: {ex.Message}");
+            }
+        }
+        return created;
+    }
+
     /// <summary>截图后「标注」：创建贴图并立即进入标注模式（标注固化后即成品，可再贴）。</summary>
     public StickerWindow CreateStickerAndAnnotate(BitmapSource image, Point physicalTopLeft)
     {

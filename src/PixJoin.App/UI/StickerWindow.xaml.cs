@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -97,6 +98,11 @@ public sealed partial class StickerWindow : Window
         PreviewMouseRightButtonUp += OnRightButtonUp;
         MouseWheel += OnMouseWheel;
 
+        // 拖入图片文件 → 直接贴图（PixPin 同款交互）
+        AllowDrop = true;
+        DragOver += OnBodyDragOver;
+        Drop += OnBodyDrop;
+
         HandleTL.DragDelta += (_, _) => OnResizeDragDelta(left: true, top: true);
         HandleTR.DragDelta += (_, _) => OnResizeDragDelta(left: false, top: true);
         HandleBL.DragDelta += (_, _) => OnResizeDragDelta(left: true, top: false);
@@ -122,6 +128,33 @@ public sealed partial class StickerWindow : Window
         // 不在 Alt+Tab 中出现
         Win32.AddExStyle(Handle, Win32.WS_EX_TOOLWINDOW);
         ApplyGeometry();
+    }
+
+    private static bool HasDroppableImage(IDataObject data)
+    {
+        if (!data.GetDataPresent(DataFormats.FileDrop) || data.GetData(DataFormats.FileDrop) is not string[] files)
+            return false;
+        foreach (var f in files)
+        {
+            string ext = System.IO.Path.GetExtension(f).ToLowerInvariant();
+            if (ext is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".tif" or ".tiff" or ".webp") return true;
+        }
+        return false;
+    }
+
+    private void OnBodyDragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = HasDroppableImage(e.Data) ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void OnBodyDrop(object sender, DragEventArgs e)
+    {
+        if (!HasDroppableImage(e.Data)) return;
+        if (e.Data.GetData(DataFormats.FileDrop) is not string[] files) return;
+        Win32.GetPhysicalCursorPos(out var p);
+        _owner.PinFiles(files, new Point(p.X, p.Y));
+        e.Handled = true;
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
