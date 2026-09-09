@@ -46,7 +46,7 @@ public sealed partial class StickerWindow : Window
     // ---- 标注 ----
     private AnnotationBarWindow? _annotBar;
     private readonly List<Annotation> _annotations = new();
-    private AnnotationTool _annotTool = AnnotationTool.Arrow;
+    private AnnotationTool? _annotTool;          // null=未选工具（贴图可拖动）
     private Color _annotColor = Color.FromRgb(0xE5, 0x39, 0x35);
     private double _annotThickness = 4;
     private bool _annotating;                    // 标注模式
@@ -205,9 +205,17 @@ public sealed partial class StickerWindow : Window
             return;
         }
 
-        // 标注模式：全部交给标注绘制
+        // 标注模式：未选工具时左键=拖动贴图；选中工具才绘制标注
         if (_annotating)
         {
+            if (_annotTool is null)
+            {
+                ClearTextSelection();
+                CaptureMouse();
+                _owner.BeginDrag(this, e.GetPosition(this));
+                e.Handled = true;
+                return;
+            }
             HandleAnnotationDown(e.GetPosition(this));
             e.Handled = true;
             return;
@@ -251,6 +259,13 @@ public sealed partial class StickerWindow : Window
 
         if (_annotating)
         {
+            if (_annotTool is null)
+            {
+                Cursor = Cursors.Arrow;
+                if (_owner.IsDragging) _owner.UpdateDrag(this);
+                return;
+            }
+            Cursor = Cursors.Cross;
             HandleAnnotationMove(e.GetPosition(this));
             return;
         }
@@ -277,6 +292,17 @@ public sealed partial class StickerWindow : Window
 
         if (_annotating)
         {
+            if (_annotTool is null)
+            {
+                if (_owner.IsDragging)
+                {
+                    if (IsMouseCaptured) ReleaseMouseCapture();
+                    _owner.EndDrag(this);
+                    e.Handled = true;
+                    PositionAnnotationBar();   // 贴图移动后工具条跟随重定位
+                }
+                return;
+            }
             HandleAnnotationUp(e.GetPosition(this));
             e.Handled = true;
             return;
@@ -728,6 +754,7 @@ public sealed partial class StickerWindow : Window
         if (_annotating || Sticker.IsLocked) return;
         _annotating = true;
         _annotNumberSeq = 0;
+        _annotTool = null;          // 进入标注不默认选中工具
         ClearTextSelection();
         _annotSelIndex = null;
         _annotDragHandle = null;
@@ -758,7 +785,7 @@ public sealed partial class StickerWindow : Window
         OverlayLayer.Visibility = Visibility.Visible;
         AnnotationLayer.Visibility = Visibility.Visible;
         HandleLayer.Visibility = Visibility.Collapsed;
-        Cursor = Cursors.Cross;
+        Cursor = Cursors.Arrow;   // 未选工具时可拖动贴图
     }
 
     /// <summary>退出标注模式。commit=true 时把标注固化进图片（可用右键「撤销标注」回退）。</summary>
@@ -811,11 +838,37 @@ public sealed partial class StickerWindow : Window
         if (_annotBar is null) return;
         _annotBar.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         double bw = _annotBar.DesiredSize.Width;
-        double x = Left + ActualWidth + 8;
-        if (x + bw > SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth)
-            x = Left - bw - 8;
-        _annotBar.Left = Math.Max(SystemParameters.VirtualScreenLeft, x);
-        _annotBar.Top = Math.Max(SystemParameters.VirtualScreenTop, Top);
+        double bh = _annotBar.DesiredSize.Height;
+        double vsL = SystemParameters.VirtualScreenLeft;
+        double vsT = SystemParameters.VirtualScreenTop;
+        double vsR = vsL + SystemParameters.VirtualScreenWidth;
+        double vsB = vsT + SystemParameters.VirtualScreenHeight;
+
+        // 首选：工具条右上角 = 贴图右下角
+        double x = Left + ActualWidth - bw;
+        double y = Top + ActualHeight;
+        bool fits = x >= vsL && y + bh <= vsB;
+        if (!fits)
+        {
+            // 回退1：贴图右侧垂直居中
+            x = Left + ActualWidth + 8;
+            y = Math.Max(vsT, Math.Min(Top + ActualHeight - bh / 2, vsB - bh));
+            fits = x + bw <= vsR && y >= vsT && y + bh <= vsB;
+        }
+        if (!fits)
+        {
+            // 回退2：贴图上方（右上角对齐贴图右上角）
+            x = Left + ActualWidth - bw;
+            y = Top - bh - 8;
+            fits = x >= vsL && y >= vsT;
+        }
+        if (!fits)
+        {
+            x = Math.Max(vsL, Math.Min(x, vsR - bw));
+            y = Math.Max(vsT, Math.Min(y, vsB - bh));
+        }
+        _annotBar.Left = x;
+        _annotBar.Top = y;
     }
 
     private void HandleAnnotationDown(Point p)
@@ -962,7 +1015,7 @@ public sealed partial class StickerWindow : Window
             case AnnotationTool.Mosaic:
                 _annotations.Add(new Annotation
                 {
-                    Tool = _annotTool,
+                    Tool = _annotTool!.Value,
                     X = Math.Min(s.X, e.X), Y = Math.Min(s.Y, e.Y),
                     W = Math.Abs(e.X - s.X), H = Math.Abs(e.Y - s.Y),
                     Color = _annotColor, Thickness = _annotThickness,
@@ -1140,8 +1193,18 @@ public sealed partial class StickerWindow : Window
         };
 
         var b = AnnotationHandles.Bounds(a);
-        double fx = (b.X + b.Width / 2) * sx;
-        double fy = b.Y * sy - 34;
+        // 与截图侧一致：浮动样式条对齐标注工具条左端下方（水平跟随工具条）
+        double fx, fy;
+        if (_annotBar is { IsVisible: true })
+        {
+            fx = _annotBar.Left - Left;
+            fy = _annotBar.Top + _annotBar.Height + 8 - Top;
+        }
+        else
+        {
+            fx = (b.X + b.Width / 2) * sx;
+            fy = b.Y * sy - 34;
+        }
         if (fy < 0) fy = (b.Y + b.Height) * sy + 8;
         Canvas.SetLeft(host, fx);
         Canvas.SetTop(host, fy);

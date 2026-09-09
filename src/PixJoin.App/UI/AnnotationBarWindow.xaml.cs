@@ -1,6 +1,7 @@
 using System;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using PixJoin.Core.Models;
 using PixJoin.Core.Services;
@@ -8,83 +9,88 @@ using PixJoin.Core.Services;
 namespace PixJoin.App.UI;
 
 /// <summary>
-/// 标注工具条（独立小窗，可超出贴图窗口）。事件回传给贴图窗口。
+/// 标注工具条（独立小窗，可超出贴图窗口）。标注工具区复用共享组件 AnnotationToolsControl，
+/// 与截图工具条同一份代码；两侧仅保留差异按钮（本窗：撤销 + 完成）。
 /// </summary>
 public partial class AnnotationBarWindow : Window
 {
-    public event Action<AnnotationTool>? ToolChanged;
+    public event Action<AnnotationTool?>? ToolChanged;
     public event Action<Color>? ColorChanged;
     public event Action<double>? ThicknessChanged;
     public event Action? UndoRequested;
     public event Action? DoneRequested;
-    public event Action<ArrowStyle, bool>? StyleApplied;   // 样式菜单：箭头样式 + 线型
+    public event Action<ArrowStyle, bool>? StyleApplied;
 
-    private Color _color = Color.FromRgb(0xE5, 0x39, 0x35);   // 默认红
+    private AnnotationTool? _tool;
+    private Color _color = AnnotationStyleMenus.Colors[0];
+    private double _thickness = 4;
     private ArrowStyle _arrowStyle = ArrowStyle.Solid;
     private bool _dashed;
+    private AnnotationToolsControl _tools = null!;
 
     public AnnotationBarWindow()
     {
         InitializeComponent();
+        BuildBar();
     }
 
-    public AnnotationTool CurrentTool { get; private set; } = AnnotationTool.Arrow;
-
-    private void OnToolChecked(object sender, RoutedEventArgs e)
+    private void BuildBar()
     {
-        if (sender is not RadioButton rb || !Enum.TryParse(rb.Tag?.ToString(), out AnnotationTool tool)) return;
-        CurrentTool = tool;
-        ToolChanged?.Invoke(tool);
-    }
-
-    /// <summary>样式下拉（箭头=箭头样式+线型；其余=线型），点击后回传给贴图窗口统一应用。</summary>
-    private void OnStyleMenu(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button btn) return;
-        var menu = CurrentTool == AnnotationTool.Arrow
-            ? AnnotationStyleMenus.BuildArrowMenu(_arrowStyle, _dashed, (s, d) =>
-            {
-                _arrowStyle = s;
-                _dashed = d;
-                StyleApplied?.Invoke(s, d);
-            })
-            : AnnotationStyleMenus.BuildLineStyleMenu(_dashed, d =>
-            {
-                _dashed = d;
-                StyleApplied?.Invoke(_arrowStyle, d);
-            });
-        menu.PlacementTarget = btn;
-        menu.IsOpen = true;
-    }
-
-    private void OnColorClicked(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button b || b.Tag is not string hex || !TryParseHex(hex, out var c)) return;
-        _color = c;
-        ColorChanged?.Invoke(c);
-    }
-
-    private void OnThickChecked(object sender, RoutedEventArgs e)
-    {
-        if (sender is not RadioButton rb || !double.TryParse(rb.Tag?.ToString(), out double t)) return;
-        ThicknessChanged?.Invoke(t);
-    }
-
-    private void OnUndo(object sender, RoutedEventArgs e) => UndoRequested?.Invoke();
-
-    private void OnDone(object sender, RoutedEventArgs e) => DoneRequested?.Invoke();
-
-    private static bool TryParseHex(string hex, out Color color)
-    {
-        color = Colors.Black;
-        try
+        var bar = new Border
         {
-            color = (Color)ColorConverter.ConvertFromString(hex);
-            return true;
-        }
-        catch
+            Background = new SolidColorBrush(Color.FromArgb(0xEE, 0x22, 0x22, 0x22)),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(4),
+        };
+        var panel = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+
+        // 撤销
+        var undo = MakeBtn("↶", "撤销标注 (Ctrl+Z)");
+        undo.Click += (_, _) => UndoRequested?.Invoke();
+        panel.Children.Add(undo);
+
+        // 共享标注工具区（与截图工具条同一组件）
+        _tools = new AnnotationToolsControl(_tool, _color, _thickness, _arrowStyle, _dashed);
+        _tools.ToolChanged += t =>
         {
-            return false;
-        }
+            _tool = t;
+            ToolChanged?.Invoke(t);
+        };
+        _tools.ColorChanged += c =>
+        {
+            _color = c;
+            ColorChanged?.Invoke(c);
+        };
+        _tools.ThicknessChanged += t =>
+        {
+            _thickness = t;
+            ThicknessChanged?.Invoke(t);
+        };
+        _tools.StyleApplied += (s, d) =>
+        {
+            _arrowStyle = s;
+            _dashed = d;
+            StyleApplied?.Invoke(s, d);
+        };
+        panel.Children.Add(_tools);
+
+        // 完成
+        var done = MakeBtn("✓ 完成", "完成并固化标注 (Esc)", primary: true);
+        done.Click += (_, _) => DoneRequested?.Invoke();
+        panel.Children.Add(done);
+
+        bar.Child = panel;
+        Content = bar;
     }
+
+    private static Button MakeBtn(string text, string tip, bool primary = false) => new()
+    {
+        Content = new TextBlock { Text = text, FontSize = 12, Foreground = Brushes.White },
+        Background = new SolidColorBrush(primary ? Color.FromRgb(0x00, 0xA8, 0xFF) : Color.FromRgb(0x3A, 0x3A, 0x3A)),
+        BorderThickness = new Thickness(0),
+        Padding = new Thickness(6, 2, 6, 2),
+        Margin = new Thickness(1, 0, 1, 0),
+        Cursor = Cursors.Hand,
+        ToolTip = tip,
+    };
 }

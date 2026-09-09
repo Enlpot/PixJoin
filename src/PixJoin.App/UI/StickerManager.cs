@@ -255,8 +255,15 @@ public sealed class StickerManager
     {
         var s = window.Sticker;
         if (orig is null || ReferenceEquals(s.Image, orig)) return;
+        var cur = s.Image;
         s.Image = orig;
         s.OcrWords = null;
+        // 预览期间尺寸可能已变（如加边框）→ 反向缩放恢复贴图显示尺寸
+        if (orig.PixelWidth != cur.PixelWidth || orig.PixelHeight != cur.PixelHeight)
+        {
+            s.W *= orig.PixelWidth / (double)cur.PixelWidth;
+            s.H *= orig.PixelHeight / (double)cur.PixelHeight;
+        }
         window.RefreshImage();
         RefreshGroupVisuals();
     }

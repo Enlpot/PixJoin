@@ -112,8 +112,12 @@ public static class ImageProcessor
                 px[i] = color.B; px[i + 1] = color.G; px[i + 2] = color.R; px[i + 3] = color.A;
             }
         }
+        // 与 ToImage 一致：非 BGRA 源先转换，避免字节序错乱
+        var conv = src.Format == PixelFormats.Bgra32
+            ? src
+            : new FormatConvertedBitmap(src, PixelFormats.Bgra32, null, 0);
         var srcPx = new byte[w * h * 4];
-        src.CopyPixels(srcPx, w * 4, 0);
+        conv.CopyPixels(srcPx, w * 4, 0);
         for (int y = 0; y < h; y++)
             Array.Copy(srcPx, y * w * 4, px, ((y + thickness) * nw + thickness) * 4, w * 4);
         var bmp = BitmapSource.Create(nw, nh, src.DpiX, src.DpiY, PixelFormats.Bgra32, null, px, nw * 4);
@@ -184,10 +188,14 @@ public static class ImageProcessor
 
     private static Image<Bgra32> ToImage(BitmapSource src)
     {
+        // 统一转换为 Bgra32：非 BGRA 源（如 JPG 的 Bgr24）直接按 4 字节/像素拷贝会字节错位
+        var conv = src.Format == PixelFormats.Bgra32
+            ? src
+            : new FormatConvertedBitmap(src, PixelFormats.Bgra32, null, 0);
         int w = src.PixelWidth, h = src.PixelHeight;
         int stride = w * 4;
         var px = new byte[stride * h];
-        src.CopyPixels(px, stride, 0);
+        conv.CopyPixels(px, stride, 0);
         return Image.LoadPixelData<Bgra32>(px, w, h);
     }
 

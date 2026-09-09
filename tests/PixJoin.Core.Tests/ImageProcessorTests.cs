@@ -132,8 +132,36 @@ public static class ImageProcessorTests
             Check.True(bottomChanged, "水印：右下角出现文字像素");
             Check.True(PixelAt(wm, 3, 3) == Colors.White, "水印：左上角保持原样");
         }
+        // 非 BGRA 源（Bgr24，模拟 JPG 贴图）：Crop/AddBorder/Adjust 必须字节序正确
+        {
+            var bgr = SolidBgr24(4, 4, Colors.Red);
+            var cr = ImageProcessor.Crop(bgr, new Rect(0, 0, 4, 4));
+            var p1 = PixelAt(cr, 2, 2);
+            Check.True(p1.R == 255 && p1.G == 0 && p1.B == 0, $"Bgr24 裁剪：红保持（实际 {p1.R},{p1.G},{p1.B}）");
+
+            var bd = ImageProcessor.AddBorder(bgr, 1, Colors.White);
+            Check.True(bd.PixelWidth == 6 && bd.PixelHeight == 6, "Bgr24 边框：尺寸 4+2×1=6");
+            Check.True(PixelAt(bd, 0, 0) == Colors.White, "Bgr24 边框：边框白色");
+            Check.True(PixelAt(bd, 2, 2) == Colors.Red, "Bgr24 边框：中心红保持");
+
+            var adj = ImageProcessor.AdjustBrightness(bgr, 0.5f);
+            var p2 = PixelAt(adj, 2, 2);
+            Check.True(p2.R >= 120 && p2.R <= 140 && p2.G == 0 && p2.B == 0,
+                $"Bgr24 亮度 0.5：红≈127（实际 {p2.R},{p2.G},{p2.B}）");
+        }
     }
 
+    /// <summary>Bgr24 纯色源（模拟 JPG 解码结果，每像素 3 字节 B,G,R）。</summary>
+    private static BitmapSource SolidBgr24(int w, int h, Color c)
+    {
+        int stride = w * 3;
+        var px = new byte[stride * h];
+        for (int i = 0; i < px.Length; i += 3)
+        {
+            px[i] = c.B; px[i + 1] = c.G; px[i + 2] = c.R;
+        }
+        return BitmapSource.Create(w, h, 96, 96, PixelFormats.Bgr24, null, px, stride);
+    }
     private static Color PixelAt(BitmapSource bmp, int x, int y)
     {
         var px = new byte[4];

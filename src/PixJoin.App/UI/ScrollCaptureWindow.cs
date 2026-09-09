@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Windows;
@@ -113,6 +113,14 @@ public sealed class ScrollCaptureWindow : Window
 
             var cur = shot.Bitmap;
             var prev = _frames[^1];
+            // 宽度变化（滚动条出现/消失等）→ 跳过该帧，避免拼接错位/越界
+            if (cur.PixelWidth != prev.PixelWidth || cur.PixelHeight != prev.PixelHeight)
+            {
+                _noOverlapCount++;
+                if (_noOverlapCount >= NoOverlapLimit) break;
+                continue;
+            }
+
             int overlap = FindOverlap(prev, cur);
 
             if (overlap < 10)
@@ -223,8 +231,10 @@ public sealed class ScrollCaptureWindow : Window
     /// <summary>字节数组拼接：Bgra32 全程，最终生成 BitmapSource。</summary>
     private BitmapSource BuildCanvas()
     {
+        // 防御：即使帧宽不同也按最大宽度左侧对齐，行内右侧留空，杜绝越界
         int totalW = _frames[0].PixelWidth;
         int totalH = _frames[0].PixelHeight;
+        for (int i = 1; i < _frames.Count; i++) totalW = Math.Max(totalW, _frames[i].PixelWidth);
         var overlaps = new int[_frames.Count - 1];
         for (int i = 1; i < _frames.Count; i++)
         {
@@ -239,10 +249,11 @@ public sealed class ScrollCaptureWindow : Window
         {
             var px = ToBgra(_frames[i]);
             int w = _frames[i].PixelWidth, h = _frames[i].PixelHeight;
+            if (w > totalW) w = totalW;   // 极端防御
             int startRow = i == 0 ? 0 : overlaps[i - 1];
             for (int y = startRow; y < h; y++)
             {
-                Buffer.BlockCopy(px, (y * w) * 4, dst, ((writeY + y - startRow) * totalW) * 4, w * 4);
+                Buffer.BlockCopy(px, (y * _frames[i].PixelWidth) * 4, dst, ((writeY + y - startRow) * totalW) * 4, w * 4);
             }
             writeY += h - startRow;
         }
@@ -262,13 +273,14 @@ public sealed class ScrollCaptureWindow : Window
     }
 
     /// <summary>点击处面积最小的可见顶层窗口（排除自身/工具窗口）。</summary>
-    private static IntPtr FindTargetWindow(System.Windows.Point cursor)
+    private IntPtr FindTargetWindow(System.Windows.Point cursor)
     {
+        IntPtr self = new System.Windows.Interop.WindowInteropHelper(this).Handle;
         IntPtr best = IntPtr.Zero;
         double bestArea = double.MaxValue;
         Win32.EnumWindows((hWnd, _) =>
         {
-            if (hWnd == IntPtr.Zero || !Win32.IsWindowVisible(hWnd)) return true;
+            if (hWnd == IntPtr.Zero || hWnd == self || !Win32.IsWindowVisible(hWnd)) return true;
             if (!Win32.GetWindowRect(hWnd, out var r)) return true;
             if (r.Left >= r.Right || r.Top >= r.Bottom) return true;
             if (cursor.X < r.Left || cursor.X >= r.Right || cursor.Y < r.Top || cursor.Y >= r.Bottom) return true;

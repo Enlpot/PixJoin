@@ -30,6 +30,7 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
     private readonly Image _bgImage = new() { Stretch = Stretch.Fill };   // 冻结画面（底层）
     private readonly Path _mask = new() { Fill = new SolidColorBrush(Color.FromArgb(0x99, 0, 0, 0)) };
     private readonly Rectangle _border = new() { Stroke = new SolidColorBrush(Color.FromRgb(0x00, 0xE5, 0xC0)), StrokeThickness = 1 };
+    private readonly Canvas _selHandleLayer = new() { IsHitTestVisible = false };   // 选区拉伸手柄（四角+四边中点，常驻显示）
     private readonly Border _hud = new() { Background = new SolidColorBrush(Color.FromArgb(0xCC, 0x18, 0x18, 0x18)), CornerRadius = new CornerRadius(3), Padding = new Thickness(6, 3, 6, 3) };
     private readonly TextBlock _hudText = new() { Foreground = Brushes.White, FontFamily = new FontFamily("Consolas, Microsoft YaHei UI") };
 
@@ -222,6 +223,7 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         Scene.Children.Add(_bgImage);          // 0 底层：冻结画面
         Scene.Children.Add(_mask);             // 1 暗色遮罩（选区挖洞露出冻结画面）
         Scene.Children.Add(_border);
+        Scene.Children.Add(_selHandleLayer);   // 选区拉伸手柄
         Scene.Children.Add(_annotLayer);       // 标注层（只显示在选区内，坐标相对选区）
         Scene.Children.Add(_floatLayer);       // 浮动样式条（标注层之上，可点击）
         Scene.Children.Add(_hud);
@@ -230,6 +232,29 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         Scene.Children.Add(_winHighlight);
         _winNameText.Child = _winNameLabel;
         Scene.Children.Add(_winNameText);
+
+        _pickChipBox = new Border
+        {
+            Width = 16, Height = 16,
+            BorderBrush = new SolidColorBrush(Color.FromArgb(0xE0, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 6, 0),
+        };
+        _pickChipText = new TextBlock { FontSize = 12, Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center };
+        var chipStack = new StackPanel { Orientation = Orientation.Horizontal };
+        chipStack.Children.Add(_pickChipBox);
+        chipStack.Children.Add(_pickChipText);
+        _pickChip = new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(0xDD, 0x00, 0x00, 0x00)),
+            CornerRadius = new CornerRadius(3),
+            Padding = new Thickness(6, 3, 6, 3),
+            Child = chipStack,
+            Visibility = Visibility.Collapsed,
+            IsHitTestVisible = false,
+        };
+        Scene.Children.Add(_pickChip);
 
         HideAll();
     }
@@ -243,16 +268,17 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         var (hWnd, rect, title) = hit.Value;
         _winRect = rect;
         _winName = title;
+        var local = ToLocalRect(rect);
         _winHighlight.Width = Math.Max(1, rect.Width);
         _winHighlight.Height = Math.Max(1, rect.Height);
-        Canvas.SetLeft(_winHighlight, rect.X);
-        Canvas.SetTop(_winHighlight, rect.Y);
+        Canvas.SetLeft(_winHighlight, local.X);
+        Canvas.SetTop(_winHighlight, local.Y);
         _winHighlight.Visibility = Visibility.Visible;
 
         _winNameLabel.Text = string.IsNullOrWhiteSpace(title) ? "（无标题窗口）" : title.Trim();
         _winNameText.Visibility = Visibility.Visible;
-        Canvas.SetLeft(_winNameText, rect.X);
-        Canvas.SetTop(_winNameText, Math.Max(0, rect.Y - 24));
+        Canvas.SetLeft(_winNameText, local.X);
+        Canvas.SetTop(_winNameText, Math.Max(0, local.Y - 24));
         _ = hWnd;
     }
 
@@ -274,7 +300,7 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
             Win32.GetClassName(hWnd, cls, 256);
             string cc = cls.ToString();
             if (cc is "Shell_TrayWnd" or "Progman" or "WorkerW" or "CiceroUIWndFrame"
-                or "Windows.UI.Core.CoreWindow" or "SysShadow" or "ToolbarWindow32" or "Button")
+                or "Windows.UI.Core.CoreWindow" or "SysShadow" or "ToolbarWindow32")
                 return true;
 
             double area = (double)(r.Right - r.Left) * (r.Bottom - r.Top);
@@ -290,6 +316,9 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         return best;
     }
 
+    private Border _pickChip;
+    private Border _pickChipBox;
+    private TextBlock _pickChipText;
     private string _lastPickedHex = "#FFFFFF";
 
     private void CopyPickedColor()
@@ -780,7 +809,7 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         }
         _selectionRect = new Rect(x, y, right - x, bottom - y);
         UpdateSelection();
-        ShowToolbar(_selectionRect);
+        MoveToolbar(_selectionRect);
         RefreshAnnotationLayer();   // 标注相对坐标不变 → 视觉随选区移动
     }
 
@@ -822,6 +851,42 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         if (hudY < 0) hudY = local.Top + 4;
         Canvas.SetLeft(_hud, hudX);
         Canvas.SetTop(_hud, hudY);
+
+        UpdateSelHandles(local);
+    }
+
+    /// <summary>选区拉伸手柄：四角 8px + 四边中点 6px，中心对齐角点/边中点，与 HitSelectionHandle 命中范围一致。</summary>
+    private void UpdateSelHandles(Rect local)
+    {
+        _selHandleLayer.Children.Clear();
+        if (!_hasSelection)
+        {
+            _selHandleLayer.Visibility = Visibility.Collapsed;
+            return;
+        }
+        const double cs = 8, es = 6;
+        (double X, double Y, double S)[] pts =
+        {
+            (local.Left, local.Top, cs), (local.Right, local.Top, cs),
+            (local.Left, local.Bottom, cs), (local.Right, local.Bottom, cs),
+            (local.Left + local.Width / 2, local.Top, es), (local.Right, local.Top + local.Height / 2, es),
+            (local.Left + local.Width / 2, local.Bottom, es), (local.Left, local.Top + local.Height / 2, es),
+        };
+        var stroke = new SolidColorBrush(Color.FromRgb(0x1E, 0x88, 0xE5));
+        foreach (var (x, y, s) in pts)
+        {
+            var r = new Rectangle
+            {
+                Width = s, Height = s,
+                Fill = Brushes.White,
+                Stroke = stroke,
+                StrokeThickness = 1.2,
+            };
+            Canvas.SetLeft(r, x - s / 2);
+            Canvas.SetTop(r, y - s / 2);
+            _selHandleLayer.Children.Add(r);
+        }
+        _selHandleLayer.Visibility = Visibility.Visible;
     }
 
     private Rect ToLocalRect(Rect physical)
@@ -832,7 +897,13 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
 
     private void RefreshCursorVisuals(Point cursor)
     {
-        if (_hasSelection) { _magnifier.Visibility = Visibility.Collapsed; return; }
+        if (_hasSelection)
+        {
+            _magnifier.Visibility = Visibility.Collapsed;
+            if (_pickingColor) { UpdatePickChip(cursor); _pickChip.Visibility = Visibility.Visible; }
+            else _pickChip.Visibility = Visibility.Collapsed;
+            return;
+        }
 
         int pcx = (int)Math.Floor(cursor.X);
         int pcy = (int)Math.Floor(cursor.Y);
@@ -905,35 +976,40 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
                 : new FormatConvertedBitmap(px, PixelFormats.Bgra32, null, 0);
             conv.CopyPixels(buf, 4, 0);
             string hex = $"#{buf[2]:X2}{buf[1]:X2}{buf[0]:X2}";
-            if (_pickingColor)
-            {
-                // 取色模式：色卡 + 点击复制提示
-                var chip = new Border
-                {
-                    Width = 18, Height = 18,
-                    Background = new SolidColorBrush(Color.FromRgb(buf[2], buf[1], buf[0])),
-                    BorderBrush = new SolidColorBrush(Color.FromArgb(0xE0, 0xFF, 0xFF, 0xFF)),
-                    BorderThickness = new Thickness(1),
-                    Margin = new Thickness(0, 2, 0, 0),
-                };
-                _magOverlay.Children.Add(chip);
-                _magText.Text = $"{hex}  {buf[2]:D3},{buf[1]:D3},{buf[0]:D3}  点击复制";
-            }
-            else
-            {
-                _magText.Text = $"{hex}  ({cursor.X}, {cursor.Y})";
-            }
+            if (_pickingColor) _magText.Text = $"{hex}  点击复制";
+            else _magText.Text = $"{hex}  ({cursor.X}, {cursor.Y})";
             _lastPickedHex = hex;
         }
 
         double mw = _magnifier.ActualWidth > 0 ? _magnifier.ActualWidth : MagSource * MagZoom + 40;
         double mh = _magnifier.ActualHeight > 0 ? _magnifier.ActualHeight : MagSource * MagZoom + 40;
 
+        if (_pickingColor) { UpdatePickChip(cursor); _pickChip.Visibility = Visibility.Visible; }
+        else _pickChip.Visibility = Visibility.Collapsed;
+
         var pos = ComputeMagnifierPos(cursor, mw, mh, CurrentSelectionRect());
         var local = ToLocal(pos);
         Canvas.SetLeft(_magnifier, local.X);
         Canvas.SetTop(_magnifier, local.Y);
         _magnifier.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>取色色卡：跟随光标，实时显示像素色 + HEX/RGB + 点击复制提示。</summary>
+    private void UpdatePickChip(Point cursor)
+    {
+        var px = _shot.Crop(new Rect(cursor.X, cursor.Y, 1, 1));
+        if (px is null) return;
+        var buf = new byte[4];
+        var conv = px.Format == PixelFormats.Bgra32 || px.Format == PixelFormats.Pbgra32
+            ? px
+            : new FormatConvertedBitmap(px, PixelFormats.Bgra32, null, 0);
+        conv.CopyPixels(buf, 4, 0);
+        _pickChipBox.Background = new SolidColorBrush(Color.FromRgb(buf[2], buf[1], buf[0]));
+        _pickChipText.Text = $"#{buf[2]:X2}{buf[1]:X2}{buf[0]:X2}  {buf[2]:D3},{buf[1]:D3},{buf[0]:D3}  点击复制";
+        _lastPickedHex = $"#{buf[2]:X2}{buf[1]:X2}{buf[0]:X2}";
+        var local = ToLocal(cursor);
+        Canvas.SetLeft(_pickChip, Math.Min(local.X + 20, MonitorHelper.VirtualScreen.Width - 260));
+        Canvas.SetTop(_pickChip, local.Y + 20);
     }
 
     private Rect? CurrentSelectionRect()
@@ -1027,57 +1103,32 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         };
         _toolbar.Children.Add(undo);
 
-        // 8 个标注工具（带 ▾ 下拉：线型菜单；箭头=样式+线型）
-        foreach (var (tool, glyph, tip) in AnnotToolDefs)
+        // 标注工具区（8 工具 + 颜色 + 粗细 + 样式下拉）：共享组件，与贴图工具条同一份代码
+        var tools = new AnnotationToolsControl(_annotTool, _annotColor, _annotThickness, _annotArrowStyle, _annotDashed, scale);
+        tools.ToolChanged += t =>
         {
-            ContextMenu? menu = tool == AnnotationTool.Arrow
-                ? AnnotationStyleMenus.BuildArrowMenu(_annotArrowStyle, _annotDashed, OnArrowStyleApply)
-                : AnnotationStyleMenus.BuildLineStyleMenu(_annotDashed, OnLineStyleApply);
-            var b = MakeToolButton(glyph, tip, menu, scale, active: _annotTool == tool);
-            var t = tool;
-            b.Click += (_, _) =>
-            {
-                _annotTool = _annotTool == t ? null : t;   // 再点一次取消工具
-                RefreshAnnotationLayer();
-                ShowToolbar(_selectionRect);
-            };
-            _toolbar.Children.Add(b);
-        }
-
-        // 颜色块（点击循环 8 色）
-        var colorBlock = new Border
-        {
-            Width = 16 * scale, Height = 16 * scale,
-            Background = new SolidColorBrush(_annotColor),
-            CornerRadius = new CornerRadius(2 * scale),
-            Margin = new Thickness(6, 0, 2, 0),
-            ToolTip = "颜色（点击切换）",
-            Cursor = Cursors.Hand,
-        };
-        colorBlock.MouseLeftButtonDown += (_, _) =>
-        {
-            int idx = Array.IndexOf(AnnotColors, _annotColor);
-            _annotColor = AnnotColors[(idx + 1) % AnnotColors.Length];
-            if (_selectedIndex is { } si2 && si2 < _annotations.Count)
-                _annotations[si2] = WithColorThickness(_annotations[si2], color: _annotColor);
+            _annotTool = t;
             RefreshAnnotationLayer();
             ShowToolbar(_selectionRect);
         };
-        _toolbar.Children.Add(colorBlock);
-
-        // 粗细档（点击循环 2/3/4/6/8/12）
-        var thickBtn = MakeToolButton($"{_annotThickness:0.#}", "粗细", null, scale, active: false);
-        thickBtn.Click += (_, _) =>
+        tools.ColorChanged += c =>
         {
-            double[] steps = { 2, 3, 4, 6, 8, 12 };
-            int idx = Array.FindIndex(steps, s => s >= _annotThickness - 0.01);
-            _annotThickness = steps[(idx + 1) % steps.Length];
+            _annotColor = c;
             if (_selectedIndex is { } si2 && si2 < _annotations.Count)
-                _annotations[si2] = WithColorThickness(_annotations[si2], thickness: _annotThickness);
+                _annotations[si2] = WithColorThickness(_annotations[si2], color: c);
             RefreshAnnotationLayer();
             ShowToolbar(_selectionRect);
         };
-        _toolbar.Children.Add(thickBtn);
+        tools.ThicknessChanged += t2 =>
+        {
+            _annotThickness = t2;
+            if (_selectedIndex is { } si2 && si2 < _annotations.Count)
+                _annotations[si2] = WithColorThickness(_annotations[si2], thickness: t2);
+            RefreshAnnotationLayer();
+            ShowToolbar(_selectionRect);
+        };
+        tools.StyleApplied += (s, d) => OnArrowStyleApply(s, d);
+        _toolbar.Children.Add(tools);
 
         _toolbar.Children.Add(MakeSeparator(scale));
         _toolbar.Children.Add(MakeActionButton("长截图", CaptureAction.ScrollCapture, scale));
@@ -1089,7 +1140,14 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
 
         _toolbarHost.Visibility = Visibility.Visible;
         _toolbarHost.UpdateLayout();
+        MoveToolbar(physicalRect);
+    }
 
+    /// <summary>仅移动工具栏位置（不重建按钮），供选区拉伸等高频拖动场景。</summary>
+    private void MoveToolbar(Rect physicalRect)
+    {
+        double scale = MonitorHelper.ScaleAtPhysicalPoint(
+            physicalRect.Left + physicalRect.Width / 2, physicalRect.Top + physicalRect.Height / 2);
         double bw = _toolbarHost.ActualWidth > 0 ? _toolbarHost.ActualWidth : 420;
         double bh = _toolbarHost.ActualHeight > 0 ? _toolbarHost.ActualHeight : 36;
 
@@ -1664,8 +1722,20 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         };
 
         var b = GetAnnotBounds(a);
-        double fx = (b.X + b.Width / 2) * scale;
-        double fy = b.Y * scale - 34 * scale;
+        // 浮动样式条与截图工具条左端对齐、固定在工具条下方（不再跟随标注水平位置）
+        double fx = Canvas.GetLeft(_toolbarHost);
+        double fy;
+        if (_toolbarHost.Visibility == Visibility.Visible)
+        {
+            fy = Canvas.GetTop(_toolbarHost) + _toolbarHost.ActualHeight + 8 * scale;
+            if (fy + 44 * scale > MonitorHelper.VirtualScreen.Height)
+                fy = b.Y * scale - 34 * scale;
+        }
+        else
+        {
+            fx = (b.X + b.Width / 2) * scale;
+            fy = b.Y * scale - 34 * scale;
+        }
         if (fy < 0) fy = (b.Y + b.Height) * scale + 8 * scale;
 
         Canvas.SetLeft(host, fx);
@@ -1832,6 +1902,7 @@ public sealed class CaptureOverlay : PhysicalCanvasWindow
         _mask.Visibility = Visibility.Visible;
 
         _border.Visibility = Visibility.Collapsed;
+        _selHandleLayer.Visibility = Visibility.Collapsed;
         _hud.Visibility = Visibility.Collapsed;
         _toolbarHost.Visibility = Visibility.Collapsed;
         _annotLayer.Visibility = Visibility.Collapsed;

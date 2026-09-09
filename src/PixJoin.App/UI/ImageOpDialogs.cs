@@ -22,9 +22,13 @@ public static class ImageOpDialogs
         {
             Owner = window,
         };
-        dlg.AddRow("亮度", -100, 100, 0, v => window.ApplyPreviewOp(b => ImageProcessor.AdjustBrightness(b, Map(v))));
-        dlg.AddRow("对比度", -100, 100, 0, v => window.ApplyPreviewOp(b => ImageProcessor.AdjustContrast(b, Map(v))));
-        dlg.AddRow("饱和度", -100, 100, 0, v => window.ApplyPreviewOp(b => ImageProcessor.AdjustSaturation(b, Map(v))));
+        double b = 0, c = 0, s = 0;
+        // 三滑块共享状态：每次预览都基于打开时原图组合应用三个参数（滑块独立、归零即还原该参数）
+        void Apply() => window.ApplyPreviewOp(img => ImageProcessor.AdjustSaturation(
+            ImageProcessor.AdjustContrast(ImageProcessor.AdjustBrightness(img, Map(b)), Map(c)), Map(s)));
+        dlg.AddRow("亮度", -100, 100, 0, v => { b = v; Apply(); });
+        dlg.AddRow("对比度", -100, 100, 0, v => { c = v; Apply(); });
+        dlg.AddRow("饱和度", -100, 100, 0, v => { s = v; Apply(); });
         dlg.ShowDialog();
     }
 
