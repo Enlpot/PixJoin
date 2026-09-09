@@ -40,6 +40,22 @@ public sealed partial class StickerWindow : Window
     private bool _selectingText;                 // 正在拖选文字
     private int _selectStart = -1;               // 起点词索引（文档顺序）
     private int _selectEnd = -1;                 // 终点词索引
+
+    // ---- 缩略图模式（PixPin：右键框选显示范围，不裁剪原图；Shift+左键平移内容；菜单裁剪才真裁剪） ----
+    private Rect? _thumbRect;          // 图片像素坐标的显示范围；null = 完整显示
+    private Rect _preThumbGeo;         // 进入缩略图前的窗口几何 (X,Y,W,H)
+    private Point? _thumbDragStart;    // 右键框选起点（窗口 DIP）
+    private bool _thumbDragging;       // 右键框选进行中
+    private Point? _thumbPanStart;     // Shift+左键平移起点（原图像素）
+    private Rect? _thumbPanRect;       // 平移起点时的显示范围
+    private bool _thumbPanning;        // 平移进行中
+    private readonly Rectangle _thumbSel = new()
+    {
+        IsHitTestVisible = false,
+        Stroke = new SolidColorBrush(Color.FromArgb(0xFF, 0x29, 0x9D, 0xF0)),
+        StrokeThickness = 1.5,
+        Fill = new SolidColorBrush(Color.FromArgb(0x33, 0x29, 0x9D, 0xF0)),
+    };
     private bool _textSelectable = true;         // 贴图级「文本可选择」开关（右键菜单）
     private readonly SolidColorBrush _selectBrush = new(Color.FromArgb(0x55, 0x33, 0x88, 0xFF));
     private FloatingBarWindow? _floating;        // 文字选择浮动工具条（独立小窗口，可超出贴图窗口）
@@ -96,6 +112,7 @@ public sealed partial class StickerWindow : Window
         MouseMove += OnBodyMouseMove;
         PreviewMouseLeftButtonUp += OnBodyMouseUp;
         PreviewMouseRightButtonUp += OnRightButtonUp;
+        PreviewMouseRightButtonDown += OnRightButtonDown;
         MouseWheel += OnMouseWheel;
 
         // 拖入图片文件 → 直接贴图（PixPin 同款交互）
@@ -238,6 +255,19 @@ public sealed partial class StickerWindow : Window
             return;
         }
 
+        // 缩略图模式：Shift+左键 = 平移显示内容（不移动贴图）
+        if (_thumbRect is not null && (Keyboard.Modifiers & ModifierKeys.Shift) != 0)
+        {
+            if (Sticker.IsLocked) { e.Handled = true; return; }
+            ClearTextSelection();
+            _thumbPanning = true;
+            _thumbPanStart = ToOrigImageCoord(e.GetPosition(this));
+            _thumbPanRect = _thumbRect;
+            CaptureMouse();
+            e.Handled = true;
+            return;
+        }
+
         // 标注模式：未选工具时左键=拖动贴图；选中工具才绘制标注
         if (_annotating)
         {
@@ -284,6 +314,32 @@ public sealed partial class StickerWindow : Window
 
     private void OnBodyMouseMove(object sender, MouseEventArgs e)
     {
+        // 缩略图框选（右键按住拖动）
+        if (_thumbDragStart is { } ts && !_cropMode && !_annotating && !Sticker.IsLocked
+            && e.RightButton == MouseButtonState.Pressed)
+        {
+            var cur = e.GetPosition(this);
+            if (!_thumbDragging && (Math.Abs(cur.X - ts.X) > 4 || Math.Abs(cur.Y - ts.Y) > 4))
+            {
+                _thumbDragging = true;
+                OverlayLayer.Visibility = Visibility.Visible;
+            }
+            if (_thumbDragging)
+            {
+                UpdateThumbDrag(ts, cur);
+                e.Handled = true;
+                return;
+            }
+        }
+
+        // 缩略图内容平移（Shift+左键）
+        if (_thumbPanning)
+        {
+            UpdateThumbPan(e.GetPosition(this));
+            e.Handled = true;
+            return;
+        }
+
         if (_cropMode)
         {
             HandleCropMove(e.GetPosition(this));
@@ -319,6 +375,14 @@ public sealed partial class StickerWindow : Window
         if (_cropMode)
         {
             HandleCropUp(e.GetPosition(this));
+            e.Handled = true;
+            return;
+        }
+
+        if (_thumbPanning)
+        {
+            _thumbPanning = false;
+            if (IsMouseCaptured) ReleaseMouseCapture();
             e.Handled = true;
             return;
         }
@@ -370,14 +434,163 @@ public sealed partial class StickerWindow : Window
         }
     }
 
+    private void OnRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        // 标注 / 裁剪 / 锁定 时不进入缩略图框选
+        if (_annotating || _cropMode || Sticker.IsLocked) return;
+        _thumbDragStart = e.GetPosition(this);
+        _thumbDragging = false;
+        e.Handled = true;
+    }
+
     private void OnRightButtonUp(object sender, MouseButtonEventArgs e)
     {
         // 标注模式：右键不弹菜单（避免误操作），Esc / ✓ 完成退出
         if (_annotating) { e.Handled = true; return; }
 
+        // 右键框选缩略图：拖动过则应用框选，未拖动才弹菜单
+        if (_thumbDragStart is not null)
+        {
+            _thumbDragStart = null;
+            if (_thumbDragging)
+            {
+                _thumbDragging = false;
+                ApplyThumbDrag(e.GetPosition(this));
+                e.Handled = true;
+                return;
+            }
+        }
+
         var menu = BuildContextMenu();
         menu.IsOpen = true;
         e.Handled = true;
+    }
+
+    // ---------------- 缩略图模式 ----------------
+
+    /// <summary>窗口 DIP → 原图像素（缩略图模式下叠加显示范围偏移）。</summary>
+    private Point ToOrigImageCoord(Point dip)
+    {
+        if (_thumbRect is { } tr)
+        {
+            double iw = Img.ActualWidth > 0 ? Img.ActualWidth : tr.Width;
+            double ih = Img.ActualHeight > 0 ? Img.ActualHeight : tr.Height;
+            return new Point(tr.X + dip.X * tr.Width / iw, tr.Y + dip.Y * tr.Height / ih);
+        }
+        return ToImageCoord(dip);
+    }
+
+    private void UpdateThumbDrag(Point start, Point cur)
+    {
+        var r = new Rect(Math.Min(start.X, cur.X), Math.Min(start.Y, cur.Y),
+                         Math.Abs(cur.X - start.X), Math.Abs(cur.Y - start.Y));
+        _thumbSel.Width = r.Width;
+        _thumbSel.Height = r.Height;
+        Canvas.SetLeft(_thumbSel, r.X);
+        Canvas.SetTop(_thumbSel, r.Y);
+        if (!OverlayLayer.Children.Contains(_thumbSel))
+            OverlayLayer.Children.Add(_thumbSel);
+    }
+
+    private void ClearThumbSel()
+    {
+        OverlayLayer.Children.Remove(_thumbSel);
+        OverlayLayer.Visibility = Sticker.OcrWords is { Count: > 0 } ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>应用右键框选为缩略图显示范围（不裁剪原图，保持原图清晰度）。</summary>
+    private void ApplyThumbDrag(Point cur)
+    {
+        ClearThumbSel();
+        if (_thumbDragStart is not { } ts) return;
+        var a = ToOrigImageCoord(ts);
+        var b = ToOrigImageCoord(cur);
+        var px = new Rect(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y),
+                          Math.Abs(b.X - a.X), Math.Abs(b.Y - a.Y));
+        if (px.Width < 8 || px.Height < 8) return;   // 太小视为误操作
+        ApplyThumbnail(px);
+    }
+
+    /// <summary>进入缩略图模式：窗口等比缩到框选范围，原图保持不动（CroppedBitmap 视图）。</summary>
+    private void ApplyThumbnail(Rect px)
+    {
+        int pw = Sticker.Image.PixelWidth;
+        int ph = Sticker.Image.PixelHeight;
+        px.Intersect(new Rect(0, 0, pw, ph));
+        if (px.Width < 8 || px.Height < 8) return;
+
+        int x = (int)Math.Round(px.X), y = (int)Math.Round(px.Y);
+        int w = (int)Math.Round(px.Width), h = (int)Math.Round(px.Height);
+        x = Math.Clamp(x, 0, pw - w);
+        y = Math.Clamp(y, 0, ph - h);
+        if (x + w > pw) w = pw - x;
+        if (y + h > ph) h = ph - y;
+        if (w < 8 || h < 8) return;
+
+        _preThumbGeo = new Rect(Sticker.X, Sticker.Y, Sticker.W, Sticker.H);
+        _thumbRect = new Rect(x, y, w, h);
+
+        var crop = new CroppedBitmap(Sticker.Image, new Int32Rect(x, y, w, h));
+        crop.Freeze();
+        Img.Source = crop;
+
+        double fw = (double)w / pw, fh = (double)h / ph;
+        Sticker.W = Math.Max(16, Sticker.W * fw);
+        Sticker.H = Math.Max(16, Sticker.H * fh);
+        ApplyGeometry();
+        ClearTextSelection();
+        _owner.OnStickerResized(this);
+    }
+
+    /// <summary>恢复完整显示：还原原图与进入缩略图前的窗口几何。</summary>
+    private void ExitThumbnail()
+    {
+        if (_thumbRect is null) return;
+        _thumbRect = null;
+        Img.Source = Sticker.Image;
+        Sticker.X = _preThumbGeo.X;
+        Sticker.Y = _preThumbGeo.Y;
+        Sticker.W = _preThumbGeo.Width;
+        Sticker.H = _preThumbGeo.Height;
+        ApplyGeometry();
+        _owner.OnStickerResized(this);
+    }
+
+    /// <summary>按缩略图范围真正裁剪原图（破坏性，可撤销一次）。</summary>
+    private void CropToThumbnail()
+    {
+        if (_thumbRect is not { } tr) return;
+        Sticker.UndoImage = Sticker.Image;
+        var crop = new CroppedBitmap(Sticker.Image,
+            new Int32Rect((int)Math.Round(tr.X), (int)Math.Round(tr.Y),
+                          (int)Math.Round(tr.Width), (int)Math.Round(tr.Height)));
+        crop.Freeze();
+        Sticker.Image = crop;
+        Sticker.OcrWords = null;   // 词框坐标失效
+        _thumbRect = null;
+        Img.Source = crop;
+        _preThumbGeo = new Rect(Sticker.X, Sticker.Y, Sticker.W, Sticker.H);
+        ApplyGeometry();
+        ClearTextSelection();
+        _owner.OnStickerResized(this);
+    }
+
+    /// <summary>Shift+左键平移显示内容：显示范围在图片内移动，窗口不动。</summary>
+    private void UpdateThumbPan(Point dip)
+    {
+        if (_thumbPanStart is not { } ps || _thumbPanRect is not { } pr) return;
+        var cur = ToOrigImageCoord(dip);
+        double dx = cur.X - ps.X, dy = cur.Y - ps.Y;
+        int pw = Sticker.Image.PixelWidth, ph = Sticker.Image.PixelHeight;
+        double nx = Math.Clamp(pr.X + dx, 0, Math.Max(0, pw - pr.Width));
+        double ny = Math.Clamp(pr.Y + dy, 0, Math.Max(0, ph - pr.Height));
+        if (Math.Abs(nx - pr.X) < 0.01 && Math.Abs(ny - pr.Y) < 0.01) return;
+        _thumbRect = new Rect(nx, ny, pr.Width, pr.Height);
+        var crop = new CroppedBitmap(Sticker.Image,
+            new Int32Rect((int)Math.Round(nx), (int)Math.Round(ny),
+                          (int)Math.Round(pr.Width), (int)Math.Round(pr.Height)));
+        crop.Freeze();
+        Img.Source = crop;
     }
 
     private void OnMouseWheel(object sender, MouseWheelEventArgs e)
@@ -509,6 +722,20 @@ public sealed partial class StickerWindow : Window
         menu.Items.Add(dissolve);
 
         menu.Items.Add(new Separator());
+
+        // ---- 缩略图模式 ----
+        if (_thumbRect is not null)
+        {
+            var exitThumb = new MenuItem { Header = "恢复完整显示" };
+            exitThumb.Click += (_, _) => ExitThumbnail();
+            menu.Items.Add(exitThumb);
+
+            var cropThumb = new MenuItem { Header = "裁剪为当前区域", IsEnabled = !Sticker.IsLocked };
+            cropThumb.Click += (_, _) => CropToThumbnail();
+            menu.Items.Add(cropThumb);
+
+            menu.Items.Add(new Separator());
+        }
 
         // ---- OCR / 文字识别 ----
         bool hasOcr = Sticker.OcrWords is { Count: > 0 };
